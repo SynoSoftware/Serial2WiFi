@@ -17,7 +17,7 @@ void clear() {
     portENTER_CRITICAL(&historyMux);
     head = 0;
     count = 0;
-    dropped = 0;
+    __atomic_store_n(&dropped, 0, __ATOMIC_RELAXED);
     portEXIT_CRITICAL(&historyMux);
 }
 
@@ -30,7 +30,7 @@ void append(uint8_t value, Direction direction) {
     if (count == kCapacity) {
         head = (head + 1) % kCapacity;
         --count;
-        ++dropped;
+        __atomic_fetch_add(&dropped, 1, __ATOMIC_RELAXED);
     }
     const size_t tail = (head + count) % kCapacity;
     history[tail] = {value, direction};
@@ -60,10 +60,7 @@ size_t snapshot(DisplayByte *destination, size_t capacity) {
 }
 
 uint32_t droppedBytes() {
-    portENTER_CRITICAL(&historyMux);
-    const uint32_t result = dropped;
-    portEXIT_CRITICAL(&historyMux);
-    return result;
+    return __atomic_load_n(&dropped, __ATOMIC_RELAXED);
 }
 
 }  // namespace display_history

@@ -13,12 +13,20 @@ enum class Overlay : uint8_t {
     SaveFailed,
 };
 
-void begin();
-void service();
+struct HoldEvent {
+    bool resetEligible;
+};
 
-bool takeShortTap();
+void begin();
+void bootComplete();
+void service();
+bool isPressed();
+
+bool takeSingleClick();
+bool takeHold(HoldEvent &event);
 bool takeFactoryResetRequest();
 void reportBaudCommit(bool succeeded);
+void reportSaveFailed();
 void reportFactoryReset(bool succeeded);
 bool restartPending();
 

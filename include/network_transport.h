@@ -14,6 +14,7 @@ enum class ConnectionState : uint8_t {
 struct Snapshot {
     ConnectionState state;
     bool tcpRetrying;
+    bool taskStartError;
     uint64_t serialToNetworkReceived;
     uint64_t serialToNetworkForwarded;
     uint64_t serialToNetworkDropped;
@@ -22,12 +23,15 @@ struct Snapshot {
     uint64_t networkToSerialForwarded;
     uint64_t networkToSerialDropped;
     size_t networkToSerialQueued;
+    uint64_t terminalToSerialReceived;
 };
 
 void begin();
 void serialBytesReceived(const uint8_t *data, size_t length);
+bool submitTerminalToSerial(const uint8_t *data, size_t length);
 void requestReconnect();
 void beginTransportBoundary();
+void waitForTerminalTxDrain();
 void endTransportBoundary();
 Snapshot snapshot();
 

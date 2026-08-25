@@ -32,6 +32,22 @@ size_t push(Buffer &buffer, const uint8_t *data, size_t length) {
     return dropped;
 }
 
+bool pushIfFits(Buffer &buffer, const uint8_t *data, size_t length) {
+    if (data == nullptr || length == 0) return false;
+    portENTER_CRITICAL(&buffer.lock);
+    if (length > buffer.capacity - buffer.count) {
+        portEXIT_CRITICAL(&buffer.lock);
+        return false;
+    }
+    for (size_t i = 0; i < length; ++i) {
+        const size_t tail = (buffer.head + buffer.count) % buffer.capacity;
+        buffer.storage[tail] = data[i];
+        ++buffer.count;
+    }
+    portEXIT_CRITICAL(&buffer.lock);
+    return true;
+}
+
 size_t pop(Buffer &buffer, uint8_t *destination, size_t capacity) {
     if (destination == nullptr || capacity == 0) return 0;
     portENTER_CRITICAL(&buffer.lock);

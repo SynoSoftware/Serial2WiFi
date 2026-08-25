@@ -10,6 +10,7 @@ struct Snapshot {
     bool trafficSeen;
     bool error;
     uint32_t fifoOverflowErrors;
+    uint32_t bufferOverflowErrors;
     uint32_t framingErrors;
     uint32_t parityErrors;
 };

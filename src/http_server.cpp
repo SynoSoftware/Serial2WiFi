@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <esp_system.h>
 
+#include "browser_terminal.h"
 #include "network_transport.h"
 #include "serial_port.h"
 #include "wifi_access.h"
@@ -86,6 +87,25 @@ const char *connectionName(network_transport::ConnectionState state) {
     return "disabled";
 }
 
+const char *liveViewName(configuration::LiveView view) {
+    return view == configuration::LiveView::Hex ? "hex" : "text";
+}
+
+const char *statusBarName(configuration::StatusBar bar) {
+    switch (bar) {
+        case configuration::StatusBar::Auto: return "auto";
+        case configuration::StatusBar::Serial: return "serial";
+        case configuration::StatusBar::Connection: return "connection";
+        case configuration::StatusBar::Network: return "network";
+    }
+    return "auto";
+}
+
+const char *displayName(const configuration::DeviceConfig &config) {
+    if (configuration::screenOff(config)) return "off";
+    return configuration::displayModeName(static_cast<configuration::DisplayMode>(config.display));
+}
+
 bool fromSetupAp() {
     return wifi_access::requestFromSetupAp(server.client());
 }
@@ -96,6 +116,56 @@ bool csrfValid() {
 
 void sendForbidden() {
     server.send(403, "application/json", "{\"error\":\"configuration_not_allowed\"}");
+}
+
+bool sameOrigin() {
+    String origin = server.header("Origin");
+    String host = server.hostHeader();
+    if (origin.length() == 0 || host.length() == 0) return false;
+
+    const int schemeEnd = origin.indexOf("://");
+    if (schemeEnd < 0) return false;
+    if (!origin.substring(0, schemeEnd).equalsIgnoreCase("http")) return false;
+    origin = origin.substring(schemeEnd + 3);
+    const int pathStart = origin.indexOf('/');
+    if (pathStart >= 0) origin = origin.substring(0, pathStart);
+    origin.trim();
+    host.trim();
+    if (origin.endsWith(":80")) origin.remove(origin.length() - 3);
+    if (host.endsWith(":80")) host.remove(host.length() - 3);
+    return origin.equalsIgnoreCase(host);
+}
+
+bool headerContainsToken(const String &header, const char *token) {
+    int start = 0;
+    while (start <= header.length()) {
+        int end = header.indexOf(',', start);
+        if (end < 0) end = header.length();
+        String value = header.substring(start, end);
+        value.trim();
+        if (value.equalsIgnoreCase(token)) return true;
+        start = end + 1;
+    }
+    return false;
+}
+
+void handleTerminal() {
+    // The setup AP is the editable/operational local boundary. Normal LAN
+    // clients may observe the terminal but are admitted read-only, matching
+    // the status-only LAN rule.
+    const bool allowTransmit = fromSetupAp();
+    if (!server.header("Upgrade").equalsIgnoreCase("websocket") ||
+            !headerContainsToken(server.header("Connection"), "Upgrade") ||
+            server.header("Sec-WebSocket-Version") != "13" ||
+            !sameOrigin()) {
+        return server.send(403, "text/plain", "WebSocket rejected");
+    }
+    if (!browser_terminal::accept(
+            server.client(),
+            server.header("Sec-WebSocket-Key").c_str(),
+            allowTransmit)) {
+        return server.send(503, "text/plain", "Terminal unavailable");
+    }
 }
 
 void sendJson(const String &body, int status = 200) {
@@ -116,18 +186,24 @@ void handleStatus() {
     body += ",\"stationIp\":\"" + escaped(ipString(wifi.stationIp)) + "\"";
     body += ",\"tcpState\":\"" + String(connectionName(transport.state)) + "\"";
     body += ",\"tcpRetrying\":" + String(transport.tcpRetrying ? "true" : "false");
+    body += ",\"transportTaskError\":" + String(transport.taskStartError ? "true" : "false");
     body += ",\"baud\":" + String(config.baud);
     body += ",\"framing\":\"" + String(configuration::framingName(
             static_cast<configuration::Framing>(config.framing))) + "\"";
-    body += ",\"display\":\"" + String(configuration::displayModeName(
-            static_cast<configuration::DisplayMode>(config.display))) + "\"";
+    body += ",\"display\":\"" + String(displayName(config)) + "\"";
+    body += ",\"liveView\":\"" + String(liveViewName(configuration::liveView(config))) + "\"";
+    body += ",\"statusBar\":\"" + String(statusBarName(configuration::statusBar(config))) + "\"";
+    body += ",\"screenOff\":" + String(configuration::screenOff(config) ? "true" : "false");
+    body += ",\"setupApEnabled\":" + String(configuration::setupApEnabled(config) ? "true" : "false");
     body += ",\"serialToNetworkReceived\":" + String(static_cast<unsigned long long>(transport.serialToNetworkReceived));
     body += ",\"serialToNetworkForwarded\":" + String(static_cast<unsigned long long>(transport.serialToNetworkForwarded));
     body += ",\"serialToNetworkDropped\":" + String(static_cast<unsigned long long>(transport.serialToNetworkDropped));
     body += ",\"networkToSerialReceived\":" + String(static_cast<unsigned long long>(transport.networkToSerialReceived));
     body += ",\"networkToSerialForwarded\":" + String(static_cast<unsigned long long>(transport.networkToSerialForwarded));
     body += ",\"networkToSerialDropped\":" + String(static_cast<unsigned long long>(transport.networkToSerialDropped));
+    body += ",\"terminalToSerialReceived\":" + String(static_cast<unsigned long long>(transport.terminalToSerialReceived));
     body += ",\"serialFifoOverflowErrors\":" + String(serial.fifoOverflowErrors);
+    body += ",\"serialBufferOverflowErrors\":" + String(serial.bufferOverflowErrors);
     body += ",\"serialFramingErrors\":" + String(serial.framingErrors);
     body += ",\"serialParityErrors\":" + String(serial.parityErrors);
     body += ",\"serialError\":" + String(serial.error ? "true" : "false");
@@ -148,8 +224,11 @@ void handleConfigGet() {
     body += ",\"baud\":" + String(config.baud);
     body += ",\"framing\":\"" + String(configuration::framingName(
             static_cast<configuration::Framing>(config.framing))) + "\"";
-    body += ",\"display\":\"" + String(configuration::displayModeName(
-            static_cast<configuration::DisplayMode>(config.display))) + "\"";
+    body += ",\"display\":\"" + String(displayName(config)) + "\"";
+    body += ",\"liveView\":\"" + String(liveViewName(configuration::liveView(config))) + "\"";
+    body += ",\"statusBar\":\"" + String(statusBarName(configuration::statusBar(config))) + "\"";
+    body += ",\"screenOff\":" + String(configuration::screenOff(config) ? "true" : "false");
+    body += ",\"setupApEnabled\":" + String(configuration::setupApEnabled(config) ? "true" : "false");
     body += ",\"csrfToken\":\"" + String(csrfToken) + "\"";
     body += "}";
     sendJson(body);
@@ -182,6 +261,8 @@ void sendValidationError(configuration::ValidationError error) {
             return configError("tcpHost", "too_long");
         case configuration::ValidationError::TcpPort:
             return configError("tcpPort", "invalid_port");
+        case configuration::ValidationError::UiPreferences:
+            return configError("display", "invalid_display_preferences");
     }
 }
 
@@ -199,6 +280,7 @@ void handleConfigPost() {
     const String baud = server.arg("baud");
     const String framing = server.arg("framing");
     const String display = server.arg("display");
+    const String setupAp = server.arg("setupApEnabled");
 
     if (ssid.length() > 32) return configError("ssid", "too_long");
     if (password.length() > 64) return configError("wifiPassword", "too_long");
@@ -245,19 +327,49 @@ void handleConfigPost() {
         return configError("framing", "invalid_framing");
     }
     candidate.framing = static_cast<uint8_t>(framingValue);
+    if (server.hasArg("setupApEnabled")) {
+        if (setupAp == "true") configuration::setSetupApEnabled(candidate, true);
+        else if (setupAp == "false") configuration::setSetupApEnabled(candidate, false);
+        else return configError("setupApEnabled", "invalid_value");
+    }
     configuration::DisplayMode displayValue;
     if (!configuration::displayModeFromName(display.c_str(), displayValue)) {
         return configError("display", "invalid_display");
     }
-    candidate.display = static_cast<uint8_t>(displayValue);
+    if (displayValue == configuration::DisplayMode::Off) {
+        if (candidate.display == static_cast<uint8_t>(configuration::DisplayMode::Off)) {
+            candidate.display = static_cast<uint8_t>(configuration::liveDisplayMode(candidate));
+        }
+        configuration::setScreenOff(candidate, true);
+    } else {
+        candidate.display = static_cast<uint8_t>(displayValue);
+        configuration::setScreenOff(candidate, false);
+        if (displayValue == configuration::DisplayMode::Text) {
+            configuration::setLiveView(candidate, configuration::LiveView::Text);
+        } else if (displayValue == configuration::DisplayMode::Hex) {
+            configuration::setLiveView(candidate, configuration::LiveView::Hex);
+        }
+    }
+
+    if (!configuration::setupApEnabled(candidate)) {
+        const wifi_access::Snapshot wifi = wifi_access::snapshot();
+        const bool wifiChanged = current.wifiSecurity != candidate.wifiSecurity ||
+            strcmp(current.ssid, candidate.ssid) != 0 ||
+            strcmp(current.wifiPassword, candidate.wifiPassword) != 0;
+        if (!wifi.stationConnected || wifiChanged) {
+            return configError("setupApEnabled", "requires_connected_target_wifi");
+        }
+    }
 
     const configuration::ValidationError validation = configuration::validationError(candidate);
     if (validation != configuration::ValidationError::None) {
         return sendValidationError(validation);
     }
-    if (!configuration::commit(candidate, applyConfiguration)) {
+    bool runtimeApplied = false;
+    if (!configuration::commit(candidate, applyConfiguration, &runtimeApplied)) {
         return sendJson("{\"error\":\"save_failed\"}", 500);
     }
+    if (!runtimeApplied) return sendJson("{\"error\":\"serial_error\"}", 503);
     sendJson("{\"ok\":true}");
 }
 
@@ -309,8 +421,15 @@ void begin(configuration::ApplyCallback callback) {
     snprintf(csrfToken, sizeof(csrfToken), "%08lX%08lX",
         static_cast<unsigned long>(tokenA), static_cast<unsigned long>(tokenB));
     filesystemReady = LittleFS.begin(false);
-    const char *headers[] = {"X-CSRF-Token"};
-    server.collectHeaders(headers, 1);
+    const char *requestHeaders[] = {
+        "X-CSRF-Token",
+        "Upgrade",
+        "Connection",
+        "Origin",
+        "Sec-WebSocket-Key",
+        "Sec-WebSocket-Version",
+    };
+    server.collectHeaders(requestHeaders, sizeof(requestHeaders) / sizeof(requestHeaders[0]));
     server.on("/", HTTP_GET, []() { serveFile("/index.html", "text/html"); });
     server.on("/style.css", HTTP_GET, []() { serveFile("/style.css", "text/css"); });
     server.on("/app.js", HTTP_GET, []() { serveFile("/app.js", "application/javascript"); });
@@ -319,6 +438,7 @@ void begin(configuration::ApplyCallback callback) {
     server.on("/api/config", HTTP_POST, handleConfigPost);
     server.on("/api/wifi/scan", HTTP_POST, handleScanPost);
     server.on("/api/wifi/scan", HTTP_GET, handleScanGet);
+    server.on("/terminal", HTTP_GET, handleTerminal);
     server.onNotFound(handleNotFound);
     server.begin();
 }

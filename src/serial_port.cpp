@@ -11,7 +11,6 @@ namespace {
 
 constexpr gpio_num_t kRxPin = GPIO_NUM_3;
 constexpr gpio_num_t kTxPin = GPIO_NUM_1;
-constexpr size_t kMaxCallbackBytes = 1024;
 
 volatile bool captureEnabled = false;
 bool uartReady = false;
@@ -21,6 +20,7 @@ bool receivedAny = false;
 ReceiveCallback receiveCallback = nullptr;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t fifoOverflowErrors = 0;
+uint32_t bufferOverflowErrors = 0;
 uint32_t framingErrors = 0;
 uint32_t parityErrors = 0;
 
@@ -36,13 +36,13 @@ void receiveHandler() {
 
     uint8_t received[256];
     size_t receivedLength = 0;
-    size_t drained = 0;
-    // Return after a bounded batch so the UART event task can schedule
-    // transport work while the driver buffer continues receiving bytes.
-    while (Serial.available() > 0 && drained < kMaxCallbackBytes) {
+    // The callback must drain the driver buffer completely. HardwareSerial
+    // dispatches one callback for a UART_DATA event; returning with bytes
+    // still queued can strand them until a later event and overflow the RX
+    // buffer during a burst.
+    while (Serial.available() > 0) {
         const int value = Serial.read();
         if (value < 0) break;
-        ++drained;
         portENTER_CRITICAL(&stateMux);
         receivedAny = true;
         portEXIT_CRITICAL(&stateMux);
@@ -69,6 +69,7 @@ void errorHandler(hardwareSerial_error_t error) {
     portENTER_CRITICAL(&stateMux);
     switch (error) {
         case UART_FIFO_OVF_ERROR: ++fifoOverflowErrors; break;
+        case UART_BUFFER_FULL_ERROR: ++bufferOverflowErrors; break;
         case UART_FRAME_ERROR: ++framingErrors; break;
         case UART_PARITY_ERROR: ++parityErrors; break;
         default: break;
@@ -132,6 +133,7 @@ void begin(const configuration::DeviceConfig &config) {
     portENTER_CRITICAL(&stateMux);
     receivedAny = false;
     fifoOverflowErrors = 0;
+    bufferOverflowErrors = 0;
     framingErrors = 0;
     parityErrors = 0;
     portEXIT_CRITICAL(&stateMux);
@@ -181,6 +183,7 @@ Snapshot snapshot() {
     result.trafficSeen = receivedAny;
     result.error = !uartReady;
     result.fifoOverflowErrors = fifoOverflowErrors;
+    result.bufferOverflowErrors = bufferOverflowErrors;
     result.framingErrors = framingErrors;
     result.parityErrors = parityErrors;
     portEXIT_CRITICAL(&stateMux);

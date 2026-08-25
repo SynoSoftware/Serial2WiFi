@@ -4,7 +4,13 @@
     let csrfToken = '';
     let configurationAllowed = false;
     let scanTimer = null;
-    let connectionAttemptActive = false;
+    const connectionAttemptPhase = Object.freeze({
+        Idle: 'idle',
+        WaitingForWifi: 'waiting-for-wifi',
+        AnnounceWifi: 'announce-wifi',
+        ConnectingServer: 'connecting-server'
+    });
+    let currentConnectionAttempt = connectionAttemptPhase.Idle;
 
     const terminalHistoryLimit = 32 * 1024;
     const terminalEncoder = new TextEncoder();
@@ -19,6 +25,12 @@
     let terminalClosing = false;
     let terminalRxBytes = 0;
     let terminalTxBytes = 0;
+    let tcpOwnsSerial = false;
+
+    // The firmware admits one bounded binary frame at a time. The frontend
+    // rejects larger sends because the protocol has no acknowledgement with
+    // which it could report partial admission safely.
+    const terminalMaxFrameBytes = 1024;
 
     function terminalWebSocketUrl() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -31,12 +43,74 @@
             return;
         }
 
-        const connected = state === 'connected';
         connection.dataset.state = state;
         connection.textContent = text;
 
-        $('terminalSendInput').disabled = !connected;
-        $('terminalSend').disabled = !connected;
+        updateTerminalWriteAccess();
+    }
+
+    function updateTerminalWriteAccess() {
+        const connection = $('terminalConnection');
+        const socketConnected =
+            terminalSocket?.readyState === WebSocket.OPEN;
+        const canTransmit =
+            socketConnected && configurationAllowed && !tcpOwnsSerial;
+        const output = $('terminalOutput');
+        const hint = $('terminalKeyboardHint');
+
+        $('terminalSendInput').disabled = !canTransmit;
+        $('terminalSend').disabled = !canTransmit;
+
+        if (output && hint) {
+            if (canTransmit) {
+                output.setAttribute(
+                    'aria-label',
+                    'Serial terminal output. Focus here to type directly to the serial port.'
+                );
+                hint.textContent =
+                    'Focus the terminal to type directly. Pause affects display only.';
+            } else if (socketConnected && tcpOwnsSerial) {
+                output.setAttribute(
+                    'aria-label',
+                    'Read-only serial terminal output while TCP owns the UART.'
+                );
+                hint.textContent =
+                    'Read-only while TCP owns the UART. Pause affects display only.';
+            } else if (socketConnected) {
+                output.setAttribute(
+                    'aria-label',
+                    'Read-only serial terminal output on the normal LAN.'
+                );
+                hint.textContent =
+                    'Read-only on the normal LAN. Pause affects display only.';
+            } else {
+                output.setAttribute('aria-label', 'Serial terminal output.');
+                hint.textContent = 'Waiting for the terminal connection.';
+            }
+        }
+
+        if (!connection || !socketConnected) {
+            return;
+        }
+
+        if (!configurationAllowed) {
+            connection.dataset.state = 'readonly';
+            connection.textContent = 'Read-only · LAN';
+        } else if (tcpOwnsSerial) {
+            connection.dataset.state = 'readonly';
+            connection.textContent = 'Read-only · TCP owns UART';
+        } else {
+            connection.dataset.state = 'connected';
+            connection.textContent = 'Connected';
+        }
+    }
+
+    function canSendTerminalBytes() {
+        return (
+            terminalSocket?.readyState === WebSocket.OPEN &&
+            configurationAllowed &&
+            !tcpOwnsSerial
+        );
     }
 
     function updateTerminalCounters() {
@@ -186,11 +260,23 @@
     }
 
     function sendTerminalBytes(bytes, localEcho = true) {
-        if (!terminalSocket || terminalSocket.readyState !== WebSocket.OPEN) {
+        if (!canSendTerminalBytes() || bytes.length === 0) {
             return false;
         }
 
-        terminalSocket.send(bytes);
+        if (bytes.length > terminalMaxFrameBytes) {
+            announce(
+                `Send is limited to ${terminalMaxFrameBytes.toLocaleString()} bytes per message.`
+            );
+            return false;
+        }
+
+        try {
+            terminalSocket.send(bytes);
+        } catch {
+            return false;
+        }
+
         terminalTxBytes += bytes.length;
 
         if (localEcho && $('terminalLocalEcho').checked) {
@@ -224,7 +310,12 @@
     }
 
     function sendTerminalKey(event) {
-        if (event.isComposing || event.metaKey || event.altKey) {
+        if (
+            !canSendTerminalBytes() ||
+            event.isComposing ||
+            event.metaKey ||
+            event.altKey
+        ) {
             return;
         }
 
@@ -281,6 +372,10 @@
     }
 
     function sendTerminalPaste(event) {
+        if (!canSendTerminalBytes()) {
+            return;
+        }
+
         const text = event.clipboardData?.getData('text');
         if (!text) {
             return;
@@ -452,7 +547,8 @@
             'tcpPort',
             'baud',
             'framing',
-            'display'
+            'display',
+            'setupApEnabled'
         ].forEach((field) => setFieldError(field));
     }
 
@@ -522,16 +618,16 @@
             $('scanState').textContent = 'Scan failed.';
             setButton(
                 $('scanAgain'),
-                'Scan',
-                'Scan for Wi-Fi networks'
+                'Scan again',
+                'Scan again for Wi-Fi networks'
             );
             return;
         }
 
         setButton(
             $('scanAgain'),
-            'Scan',
-            'Scan for Wi-Fi networks'
+            'Scan again',
+            'Scan again for Wi-Fi networks'
         );
 
         if (networks.length === 0) {
@@ -664,6 +760,7 @@
         $('baud').value = String(config.baud);
         $('framing').value = config.framing;
         $('display').value = config.display;
+        $('setupApEnabled').checked = config.setupApEnabled !== false;
 
         $('manualSecurityGroup').hidden = Boolean(config.ssid);
 
@@ -671,6 +768,8 @@
     }
 
     function renderStatus(status) {
+        tcpOwnsSerial = status.tcpState === 'connected';
+
         $('wifiState').textContent =
             status.wifiConnected ? 'Connected' : 'Unavailable';
 
@@ -680,6 +779,9 @@
                 : status.tcpState;
 
         $('stationIp').textContent = status.stationIp || '—';
+        $('setupApState').textContent = status.wifiApActive
+            ? 'Enabled'
+            : 'Disabled';
         $('statusBaud').textContent = status.baud || '—';
         $('statusFraming').textContent = status.framing || '—';
 
@@ -699,14 +801,27 @@
         $('statusDrops').textContent =
             `${status.serialToNetworkDropped || 0} / ` +
             `${status.networkToSerialDropped || 0}`;
+
+        const setupApControl = $('setupApEnabled');
+        const setupApHint = $('setupApHint');
+        if (setupApControl && setupApHint) {
+            setupApControl.disabled = !status.wifiConnected;
+            setupApHint.textContent = status.wifiConnected
+                ? 'Disable only after target Wi-Fi is connected; the setup network will not return automatically.'
+                : 'Connect target Wi-Fi before disabling the setup network.';
+        }
+
+        updateTerminalWriteAccess();
     }
 
     function renderConnectionAttempt(status) {
-        if (!connectionAttemptActive) {
+        if (currentConnectionAttempt === connectionAttemptPhase.Idle) {
             return;
         }
 
         if (status.wifiConfigured && !status.wifiConnected) {
+            currentConnectionAttempt =
+                connectionAttemptPhase.WaitingForWifi;
             announce('Wi-Fi unavailable. Retrying automatically…');
             return;
         }
@@ -722,6 +837,25 @@
                 finishConnectionAttempt();
             }
 
+            return;
+        }
+
+        if (
+            currentConnectionAttempt ===
+            connectionAttemptPhase.WaitingForWifi
+        ) {
+            currentConnectionAttempt = connectionAttemptPhase.AnnounceWifi;
+            announce('Wi-Fi connected');
+            return;
+        }
+
+        if (
+            currentConnectionAttempt ===
+            connectionAttemptPhase.AnnounceWifi
+        ) {
+            currentConnectionAttempt =
+                connectionAttemptPhase.ConnectingServer;
+            announce('Connecting to server…');
             return;
         }
 
@@ -742,10 +876,10 @@
     }
 
     function finishConnectionAttempt() {
-        connectionAttemptActive = false;
+        currentConnectionAttempt = connectionAttemptPhase.Idle;
 
         $('save').disabled = false;
-        setButton($('save'), 'Save', 'Save settings');
+        setButton($('save'), 'Save changes', 'Save settings');
         announce('Ready');
     }
 
@@ -820,7 +954,8 @@
             tcpPort: $('tcpPort').value || '0',
             baud: $('baud').value,
             framing: $('framing').value,
-            display: $('display').value
+            display: $('display').value,
+            setupApEnabled: String($('setupApEnabled').checked)
         });
 
         try {
@@ -856,11 +991,12 @@
                 announce(result.error || 'Save failed.');
 
                 button.disabled = false;
-                setButton(button, 'Save', 'Save settings');
+                setButton(button, 'Save and connect', 'Save settings');
                 return;
             }
 
-            connectionAttemptActive = true;
+            currentConnectionAttempt =
+                connectionAttemptPhase.WaitingForWifi;
 
             announce(
                 $('ssid').value
@@ -870,7 +1006,7 @@
 
             setButton(
                 button,
-                'Save',
+                'Connecting…',
                 'Connecting with saved settings'
             );
 
@@ -881,26 +1017,26 @@
             );
 
             button.disabled = false;
-            setButton(button, 'Save', 'Save settings');
+            setButton(button, 'Save and connect', 'Save settings');
         }
     }
 
     setButton(
         $('otherNetwork'),
-        'Other',
+        'Other network',
         'Enter a Wi-Fi network manually'
     );
 
     setButton(
         $('scanAgain'),
-        'Scan',
-        'Scan for Wi-Fi networks'
+        'Scan again',
+        'Scan again for Wi-Fi networks'
     );
 
     setButton(
         $('save'),
-        'Save',
-        'Save settings'
+        'Save and connect',
+        'Save and connect'
     );
 
     setPasswordShown(false);

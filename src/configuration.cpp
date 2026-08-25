@@ -17,6 +17,12 @@ constexpr uint32_t kSupportedBauds[] = {
         2400, 4800, 9600, 19200, 38400, 57600,
         115200, 230400, 460800, 921600, 1000000};
 constexpr size_t kSupportedBaudCount = sizeof(kSupportedBauds) / sizeof(kSupportedBauds[0]);
+constexpr uint8_t kLiveViewMask = 0x01;
+constexpr uint8_t kStatusBarMask = 0x06;
+constexpr uint8_t kScreenOffMask = 0x08;
+constexpr uint8_t kSetupApEnabledMask = 0x10;
+constexpr uint8_t kUiPreferenceMask =
+    kLiveViewMask | kStatusBarMask | kScreenOffMask | kSetupApEnabledMask;
 
 size_t boundedLength(const char *value, size_t capacity) {
     return strnlen(value, capacity);
@@ -32,6 +38,12 @@ bool readStored(DeviceConfig &config) {
     DeviceConfig stored{};
     const size_t read = preferences.getBytes("cfg", &stored, sizeof(stored));
     preferences.end();
+    if (read == sizeof(stored) && stored.schema == kLegacySchema) {
+        // Schema 1 had no setup-AP preference. Preserve its user settings and
+        // retain the historical reachable provisioning behavior on upgrade.
+        stored.schema = kSchema;
+        setSetupApEnabled(stored, true);
+    }
     if (read != sizeof(DeviceConfig) ||
             validationError(stored) != ValidationError::None) return false;
     config = stored;
@@ -47,6 +59,7 @@ DeviceConfig factoryDefaults() {
     config.framing = static_cast<uint8_t>(Framing::EightN1);
     config.display = static_cast<uint8_t>(DisplayMode::Text);
     config.wifiSecurity = static_cast<uint8_t>(WifiSecurity::Unset);
+    config.uiPreferences = kSetupApEnabledMask;
     return config;
 }
 
@@ -54,7 +67,13 @@ void begin() {
     configurationMutex = xSemaphoreCreateMutex();
     commitMutex = xSemaphoreCreateMutex();
     currentConfig = factoryDefaults();
-    readStored(currentConfig);
+    if (readStored(currentConfig) &&
+            currentConfig.display == static_cast<uint8_t>(DisplayMode::Off)) {
+        // Older browser saves used DisplayMode::Off. Normalize that legacy
+        // representation into the single persisted local screen-off flag.
+        setScreenOff(currentConfig, true);
+        currentConfig.display = static_cast<uint8_t>(liveDisplayMode(currentConfig));
+    }
 }
 
 DeviceConfig snapshot() {
@@ -137,6 +156,46 @@ bool displayModeFromName(const char *name, DisplayMode &mode) {
     return true;
 }
 
+LiveView liveView(const DeviceConfig &config) {
+    return (config.uiPreferences & kLiveViewMask) == 0 ? LiveView::Text : LiveView::Hex;
+}
+
+void setLiveView(DeviceConfig &config, LiveView view) {
+    config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kLiveViewMask);
+    if (view == LiveView::Hex) config.uiPreferences |= kLiveViewMask;
+}
+
+StatusBar statusBar(const DeviceConfig &config) {
+    return static_cast<StatusBar>((config.uiPreferences & kStatusBarMask) >> 1);
+}
+
+void setStatusBar(DeviceConfig &config, StatusBar bar) {
+    config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kStatusBarMask);
+    config.uiPreferences |= static_cast<uint8_t>(bar) << 1;
+}
+
+bool screenOff(const DeviceConfig &config) {
+    return (config.uiPreferences & kScreenOffMask) != 0;
+}
+
+void setScreenOff(DeviceConfig &config, bool off) {
+    if (off) config.uiPreferences |= kScreenOffMask;
+    else config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kScreenOffMask);
+}
+
+bool setupApEnabled(const DeviceConfig &config) {
+    return (config.uiPreferences & kSetupApEnabledMask) != 0;
+}
+
+void setSetupApEnabled(DeviceConfig &config, bool enabled) {
+    if (enabled) config.uiPreferences |= kSetupApEnabledMask;
+    else config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kSetupApEnabledMask);
+}
+
+DisplayMode liveDisplayMode(const DeviceConfig &config) {
+    return liveView(config) == LiveView::Hex ? DisplayMode::Hex : DisplayMode::Text;
+}
+
 ValidationError validationError(const DeviceConfig &candidate) {
     if (candidate.schema != kSchema) return ValidationError::Schema;
     if (!supportedBaud(candidate.baud)) return ValidationError::Baud;
@@ -145,6 +204,10 @@ ValidationError validationError(const DeviceConfig &candidate) {
     }
     if (candidate.display > static_cast<uint8_t>(DisplayMode::Off)) {
         return ValidationError::Display;
+    }
+    if ((candidate.uiPreferences & ~kUiPreferenceMask) != 0 ||
+            static_cast<uint8_t>(statusBar(candidate)) > static_cast<uint8_t>(StatusBar::Network)) {
+        return ValidationError::UiPreferences;
     }
     if (candidate.wifiSecurity > static_cast<uint8_t>(WifiSecurity::Secured)) {
         return ValidationError::WifiSecurity;
@@ -186,7 +249,11 @@ bool validate(const DeviceConfig &candidate) {
     return validationError(candidate) == ValidationError::None;
 }
 
-bool commit(const DeviceConfig &candidate, ApplyCallback apply) {
+bool commit(
+    const DeviceConfig &candidate,
+    ApplyCallback apply,
+    bool *runtimeApplied) {
+    if (runtimeApplied != nullptr) *runtimeApplied = false;
     if (configurationMutex == nullptr || commitMutex == nullptr ||
             xSemaphoreTake(commitMutex, portMAX_DELAY) != pdTRUE) {
         return false;
@@ -212,13 +279,15 @@ bool commit(const DeviceConfig &candidate, ApplyCallback apply) {
     if (committed && apply != nullptr) {
         // The commit lock serializes runtime transitions, while the state lock
         // is released before UART, Wi-Fi, or transport work begins.
-        apply(previous, candidate);
+        const bool applied = apply(previous, candidate);
+        if (runtimeApplied != nullptr) *runtimeApplied = applied;
     }
     xSemaphoreGive(commitMutex);
     return committed;
 }
 
-bool factoryReset(ApplyCallback apply) {
+bool factoryReset(ApplyCallback apply, bool *runtimeApplied) {
+    if (runtimeApplied != nullptr) *runtimeApplied = false;
     if (configurationMutex == nullptr || commitMutex == nullptr ||
             xSemaphoreTake(commitMutex, portMAX_DELAY) != pdTRUE) {
         return false;
@@ -237,7 +306,10 @@ bool factoryReset(ApplyCallback apply) {
             const DeviceConfig next = factoryDefaults();
             currentConfig = next;
             xSemaphoreGive(configurationMutex);
-            if (apply != nullptr) apply(previous, next);
+            if (apply != nullptr) {
+                const bool applied = apply(previous, next);
+                if (runtimeApplied != nullptr) *runtimeApplied = applied;
+            }
         }
     }
 

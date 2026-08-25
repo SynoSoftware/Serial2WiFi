@@ -15,6 +15,8 @@ struct Buffer {
 
 void initialize(Buffer &buffer, uint8_t *storage, size_t capacity);
 size_t push(Buffer &buffer, const uint8_t *data, size_t length);
+// Browser TX messages must be admitted whole; never enqueue a partial frame.
+bool pushIfFits(Buffer &buffer, const uint8_t *data, size_t length);
 size_t pop(Buffer &buffer, uint8_t *destination, size_t capacity);
 size_t clear(Buffer &buffer);
 void recordDropped(Buffer &buffer, size_t amount);

@@ -21,6 +21,194 @@
 
             <p id="announcements" class="announcement" aria-live="polite"></p>
 
+            <form id="configuration" class="panel" hidden>
+                <h2>Wi-Fi</h2>
+                <p class="muted">
+                    Choose the network this gateway should join.
+                </p>
+
+                <div id="scanState" class="scan-state" aria-live="polite">
+                    Scanning…
+                </div>
+                <div
+                    id="networkList"
+                    class="network-list"
+                    role="listbox"
+                    aria-label="Wi-Fi networks"
+                ></div>
+                <button id="otherNetwork" class="secondary full" type="button">
+                    Other network
+                </button>
+                <button id="scanAgain" class="secondary full" type="button">
+                    Scan again
+                </button>
+
+                <div id="manualSecurityGroup" class="field" hidden>
+                    <label for="wifiSecurity">Network security</label>
+                    <select
+                        id="wifiSecurity"
+                        aria-describedby="wifiSecurityError"
+                    >
+                        <option value="secured">Password-protected</option>
+                        <option value="open">Open</option>
+                    </select>
+                    <p
+                        id="wifiSecurityError"
+                        class="field-error"
+                        role="alert"
+                    ></p>
+                </div>
+
+                <div class="field">
+                    <label for="ssid">Network name (SSID)</label>
+                    <input
+                        id="ssid"
+                        name="ssid"
+                        autocomplete="off"
+                        maxlength="32"
+                        aria-describedby="ssidError"
+                    />
+                    <p id="ssidError" class="field-error" role="alert"></p>
+                </div>
+
+                <div id="passwordGroup" class="field">
+                    <label for="wifiPassword">Wi-Fi password</label>
+                    <div class="password-control">
+                        <input
+                            id="wifiPassword"
+                            name="wifiPassword"
+                            type="password"
+                            autocomplete="current-password"
+                            maxlength="64"
+                            aria-describedby="wifiPasswordError"
+                        />
+                        <button
+                            id="showPassword"
+                            class="inline-button"
+                            type="button"
+                            aria-pressed="false"
+                        >
+                            Show
+                        </button>
+                    </div>
+                    <p
+                        id="wifiPasswordError"
+                        class="field-error"
+                        role="alert"
+                    ></p>
+                </div>
+
+                <div class="field checkbox-field">
+                    <label for="setupApEnabled">
+                        <input
+                            id="setupApEnabled"
+                            type="checkbox"
+                            checked
+                            aria-describedby="setupApHint setupApEnabledError"
+                        />
+                        <span>Keep setup Wi-Fi enabled</span>
+                    </label>
+                    <p id="setupApHint" class="muted">
+                        Leave enabled while commissioning. You can disable it
+                        after target Wi-Fi connects.
+                    </p>
+                    <p
+                        id="setupApEnabledError"
+                        class="field-error"
+                        role="alert"
+                    ></p>
+                </div>
+
+                <section class="subsection">
+                    <h2>TCP server</h2>
+                    <div class="field">
+                        <label for="tcpHost">Server host</label>
+                        <input
+                            id="tcpHost"
+                            maxlength="253"
+                            autocomplete="off"
+                            aria-describedby="tcpHostError"
+                        />
+                        <p
+                            id="tcpHostError"
+                            class="field-error"
+                            role="alert"
+                        ></p>
+                    </div>
+                    <div class="field">
+                        <label for="tcpPort">Server port</label>
+                        <input
+                            id="tcpPort"
+                            type="number"
+                            min="0"
+                            max="65535"
+                            inputmode="numeric"
+                            aria-describedby="tcpPortError"
+                        />
+                        <p
+                            id="tcpPortError"
+                            class="field-error"
+                            role="alert"
+                        ></p>
+                    </div>
+                </section>
+
+                <section class="subsection">
+                    <h2>Serial</h2>
+                    <div class="field">
+                        <label for="baud">Baud rate</label>
+                        <select id="baud" aria-describedby="baudError">
+                            <option>2400</option>
+                            <option>4800</option>
+                            <option>9600</option>
+                            <option>19200</option>
+                            <option>38400</option>
+                            <option>57600</option>
+                            <option>115200</option>
+                            <option>230400</option>
+                            <option>460800</option>
+                            <option>921600</option>
+                            <option>1000000</option>
+                        </select>
+                        <p id="baudError" class="field-error" role="alert"></p>
+                    </div>
+                    <div class="field">
+                        <label for="framing">Framing</label>
+                        <select id="framing" aria-describedby="framingError">
+                            <option>8N1</option>
+                            <option>8N2</option>
+                            <option>8E1</option>
+                            <option>8O1</option>
+                            <option>7E1</option>
+                            <option>7O1</option>
+                        </select>
+                        <p
+                            id="framingError"
+                            class="field-error"
+                            role="alert"
+                        ></p>
+                    </div>
+                    <div class="field">
+                        <label for="display">OLED display</label>
+                        <select id="display" aria-describedby="displayError">
+                            <option value="text">Live text</option>
+                            <option value="hex">Live hex</option>
+                            <option value="stats">Statistics</option>
+                            <option value="off">Off</option>
+                        </select>
+                        <p
+                            id="displayError"
+                            class="field-error"
+                            role="alert"
+                        ></p>
+                    </div>
+                </section>
+
+                <button id="save" class="primary full" type="submit">
+                    Save and connect
+                </button>
+            </form>
+
             <section
                 id="browserTerminal"
                 class="panel terminal-panel"
@@ -126,179 +314,16 @@
                 </div>
             </section>
 
-            <form id="configuration" class="panel" hidden>
-                <h2>Wi-Fi</h2>
-                <p class="muted">
-                    Choose the network this gateway should join.
-                </p>
-
-                <div id="scanState" class="scan-state" aria-live="polite">
-                    Scanning…
-                </div>
-                <div
-                    id="networkList"
-                    class="network-list"
-                    role="listbox"
-                    aria-label="Wi-Fi networks"
-                ></div>
-                <button id="otherNetwork" class="secondary full" type="button">
-                    Other network
-                </button>
-                <button id="scanAgain" class="secondary full" type="button">
-                    Scan again
-                </button>
-
-                <div id="manualSecurityGroup" class="field" hidden>
-                    <label for="wifiSecurity">Network security</label>
-                    <select
-                        id="wifiSecurity"
-                        aria-describedby="wifiSecurityError"
-                    >
-                        <option value="secured">Password-protected</option>
-                        <option value="open">Open</option>
-                    </select>
-                    <p
-                        id="wifiSecurityError"
-                        class="field-error"
-                        role="alert"
-                    ></p>
-                </div>
-
-                <div class="field">
-                    <label for="ssid">Network name (SSID)</label>
-                    <input
-                        id="ssid"
-                        name="ssid"
-                        autocomplete="off"
-                        maxlength="32"
-                        aria-describedby="ssidError"
-                    />
-                    <p id="ssidError" class="field-error" role="alert"></p>
-                </div>
-
-                <div id="passwordGroup" class="field">
-                    <label for="wifiPassword">Wi-Fi password</label>
-                    <div class="password-control">
-                        <input
-                            id="wifiPassword"
-                            name="wifiPassword"
-                            type="password"
-                            autocomplete="current-password"
-                            maxlength="64"
-                            aria-describedby="wifiPasswordError"
-                        />
-                        <button
-                            id="showPassword"
-                            class="inline-button"
-                            type="button"
-                            aria-pressed="false"
-                        >
-                            Show
-                        </button>
-                    </div>
-                    <p
-                        id="wifiPasswordError"
-                        class="field-error"
-                        role="alert"
-                    ></p>
-                </div>
-
-                <section class="subsection">
-                    <h2>TCP server</h2>
-                    <div class="field">
-                        <label for="tcpHost">Server host</label>
-                        <input
-                            id="tcpHost"
-                            maxlength="253"
-                            autocomplete="off"
-                            aria-describedby="tcpHostError"
-                        />
-                        <p
-                            id="tcpHostError"
-                            class="field-error"
-                            role="alert"
-                        ></p>
-                    </div>
-                    <div class="field">
-                        <label for="tcpPort">Server port</label>
-                        <input
-                            id="tcpPort"
-                            type="number"
-                            min="0"
-                            max="65535"
-                            inputmode="numeric"
-                            aria-describedby="tcpPortError"
-                        />
-                        <p
-                            id="tcpPortError"
-                            class="field-error"
-                            role="alert"
-                        ></p>
-                    </div>
-                </section>
-
-                <section class="subsection">
-                    <h2>Serial</h2>
-                    <div class="field">
-                        <label for="baud">Baud rate</label>
-                        <select id="baud" aria-describedby="baudError">
-                            <option>2400</option>
-                            <option>4800</option>
-                            <option>9600</option>
-                            <option>19200</option>
-                            <option>38400</option>
-                            <option>57600</option>
-                            <option>115200</option>
-                            <option>230400</option>
-                            <option>460800</option>
-                            <option>921600</option>
-                            <option>1000000</option>
-                        </select>
-                        <p id="baudError" class="field-error" role="alert"></p>
-                    </div>
-                    <div class="field">
-                        <label for="framing">Framing</label>
-                        <select id="framing" aria-describedby="framingError">
-                            <option>8N1</option>
-                            <option>8N2</option>
-                            <option>8E1</option>
-                            <option>8O1</option>
-                            <option>7E1</option>
-                            <option>7O1</option>
-                        </select>
-                        <p
-                            id="framingError"
-                            class="field-error"
-                            role="alert"
-                        ></p>
-                    </div>
-                    <div class="field">
-                        <label for="display">OLED display</label>
-                        <select id="display" aria-describedby="displayError">
-                            <option value="text">Live text</option>
-                            <option value="hex">Live hex</option>
-                            <option value="stats">Statistics</option>
-                            <option value="off">Off</option>
-                        </select>
-                        <p
-                            id="displayError"
-                            class="field-error"
-                            role="alert"
-                        ></p>
-                    </div>
-                </section>
-
-                <button id="save" class="primary full" type="submit">
-                    Save and connect
-                </button>
-            </form>
-
             <section id="statusPanel" class="panel">
                 <h2>Status</h2>
                 <dl class="status-grid">
                     <div>
                         <dt>Station IP</dt>
                         <dd id="stationIp">—</dd>
+                    </div>
+                    <div>
+                        <dt>Setup Wi-Fi</dt>
+                        <dd id="setupApState">—</dd>
                     </div>
                     <div>
                         <dt>Baud</dt>

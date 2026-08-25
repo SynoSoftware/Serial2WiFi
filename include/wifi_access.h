@@ -19,7 +19,6 @@ struct Snapshot {
     bool stationConnected;
     char setupSsid[33];
     char setupPassword[17];
-    IPAddress apIp;
     IPAddress stationIp;
 };
 
@@ -32,6 +31,7 @@ struct ScanResult {
 void begin();
 void service();
 void configurationChanged(const configuration::DeviceConfig &next);
+void setSetupApEnabled(bool enabled);
 Snapshot snapshot();
 bool requestFromSetupAp(const WiFiClient &client);
 
