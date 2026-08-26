@@ -45,7 +45,7 @@
         <header class="brand-row">
             <div class="device-brand">
                 <span class="product-name">Serial2WiFi</span>
-                <span id="deviceName" class="device-name">Loading…</span>
+                <span id="deviceName" class="device-name">Loading...</span>
             </div>
             <span class="brand-name">synapse.sr</span>
         </header>
@@ -66,327 +66,391 @@
 
         <div id="globalNotice" class="message-bar" role="status" hidden>
             <svg class="icon" aria-hidden="true"><use href="#icon-triangle-alert"></use></svg>
-            <span id="globalNoticeText">Device connection lost. Retrying…</span>
+            <span id="globalNoticeText">Device connection lost. Retrying...</span>
         </div>
         <p id="announcements" class="sr-only" aria-live="polite"></p>
 
         <section id="bootView" class="boot-view" aria-live="polite">
             <svg class="icon spin" aria-hidden="true"><use href="#icon-loader-circle"></use></svg>
-            <span>Connecting to device…</span>
+            <span>Connecting to device...</span>
         </section>
 
         <section id="authPanel" class="access-panel" hidden aria-labelledby="authTitle">
-            <div class="access-copy">
-                <h2 id="authTitle">Sign in</h2>
-                <p id="authText"></p>
-            </div>
-            <div id="authLoginFields" class="access-fields" hidden>
-                <label for="loginPassword">Administrator password</label>
-                <div class="access-action-row">
-                    <input id="loginPassword" type="password" autocomplete="current-password" />
-                    <button id="loginButton" class="primary" type="button">Sign in</button>
+            <div class="access-shell">
+                <div class="access-copy">
+                    <h1 id="authTitle">Sign in</h1>
+                    <p id="authText"></p>
                 </div>
-            </div>
-            <div id="authBootstrapFields" class="access-fields" hidden>
-                <div class="two-field-grid">
+
+                <div id="authLoginFields" class="access-fields" hidden>
+                    <label for="loginPassword">Administrator password</label>
+                    <div class="password-control">
+                        <input id="loginPassword" type="password" autocomplete="current-password" />
+                        <button class="inline-button password-toggle" type="button" data-password-toggle="loginPassword" aria-label="Show administrator password">
+                            <svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg><span>Show</span>
+                        </button>
+                    </div>
+                    <button id="loginButton" class="primary access-submit" type="button">Sign in</button>
+                </div>
+
+                <div id="authBootstrapFields" class="access-fields" hidden>
                     <div class="field">
                         <label for="bootstrapPassword">Administrator password</label>
-                        <input id="bootstrapPassword" type="password" autocomplete="new-password" />
+                        <div class="password-control">
+                            <input id="bootstrapPassword" type="password" autocomplete="new-password" />
+                            <button class="inline-button password-toggle" type="button" data-password-toggle="bootstrapPassword" aria-label="Show administrator password">
+                                <svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg><span>Show</span>
+                            </button>
+                        </div>
                     </div>
                     <div class="field">
                         <label for="bootstrapPasswordConfirm">Confirm password</label>
-                        <input id="bootstrapPasswordConfirm" type="password" autocomplete="new-password" />
+                        <div class="password-control">
+                            <input id="bootstrapPasswordConfirm" type="password" autocomplete="new-password" />
+                            <button class="inline-button password-toggle" type="button" data-password-toggle="bootstrapPasswordConfirm" aria-label="Show confirmed password">
+                                <svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg><span>Show</span>
+                            </button>
+                        </div>
                     </div>
+                    <button id="bootstrapButton" class="primary access-submit" type="button">Create password</button>
                 </div>
-                <button id="bootstrapButton" class="primary" type="button">Create password</button>
+                <p id="authError" class="field-error" role="alert" hidden></p>
             </div>
-            <p id="authError" class="field-error" role="alert" hidden></p>
         </section>
 
         <section id="setupView" class="view" role="tabpanel" aria-labelledby="setupTab" hidden>
-            <div id="setupLoading" class="loading-state" role="status">
-                <svg class="icon spin" aria-hidden="true"><use href="#icon-loader-circle"></use></svg>
-                <span>Loading settings…</span>
-            </div>
-
-            <div id="setupUnavailable" class="notice" hidden>
-                <svg class="icon notice-icon" aria-hidden="true"><use href="#icon-info"></use></svg>
-                <div>
-                    <h2>Settings unavailable</h2>
-                    <p id="setupUnavailableText"></p>
+            <div class="view-content">
+                <div id="setupLoading" class="loading-state" role="status">
+                    <svg class="icon spin" aria-hidden="true"><use href="#icon-loader-circle"></use></svg>
+                    <span>Loading settings...</span>
                 </div>
-            </div>
 
-            <form id="configuration" hidden novalidate>
-                <section class="settings-section" aria-labelledby="wifiTitle">
-                    <h2 id="wifiTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-wifi"></use></svg><span>Wi-Fi</span></h2>
-
-                    <div id="wifiSummary">
-                        <div id="wifiConfigured" hidden>
-                            <div class="setting-row">
-                                <span class="setting-label">Network</span>
-                                <div class="setting-value"><strong id="wifiCurrentName">—</strong><span id="wifiPending" class="pending-label" hidden>Not saved</span></div>
-                                <button id="changeNetwork" class="text-button" type="button">Change</button>
-                            </div>
-                            <div id="passwordSummary" class="setting-row" hidden>
-                                <span class="setting-label">Password</span>
-                                <span id="passwordState" class="setting-value muted">Saved</span>
-                                <button id="changePassword" class="text-button" type="button">Change password</button>
-                            </div>
-                        </div>
-                        <div id="wifiEmpty" class="empty-setting" hidden>
-                            <span>No network configured.</span>
-                            <div class="inline-actions">
-                                <button id="chooseNetwork" class="secondary-button" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-wifi"></use></svg><span>Choose network</span></button>
-                                <button id="enterNetwork" class="text-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg><span>Enter manually</span></button>
-                            </div>
-                        </div>
+                <div id="setupUnavailable" class="notice" hidden>
+                    <svg class="icon notice-icon" aria-hidden="true"><use href="#icon-info"></use></svg>
+                    <div>
+                        <h2>Settings unavailable</h2>
+                        <p id="setupUnavailableText"></p>
                     </div>
+                </div>
 
-                    <div id="wifiChooser" class="wifi-editor" hidden>
-                        <div class="editor-heading"><strong>Choose network</strong><button id="cancelNetworkChange" class="text-button" type="button">Cancel</button></div>
-                        <div class="scan-heading">
-                            <span id="scanState" class="scan-state" aria-live="polite"></span>
-                            <button id="scanAgain" class="text-button icon-text" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#icon-refresh-cw"></use></svg><span>Scan again</span></button>
+                <form id="configuration" hidden novalidate>
+                    <section class="settings-section" aria-labelledby="wifiTitle">
+                        <h2 id="wifiTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-wifi"></use></svg><span>Wi-Fi</span></h2>
+
+                        <div id="wifiSummary">
+                            <div id="wifiConfigured" hidden>
+                                <div class="setting-row">
+                                    <span class="setting-label">Network</span>
+                                    <div class="setting-value"><strong id="wifiCurrentName">-</strong><span id="wifiPending" class="pending-label" hidden>Not saved</span></div>
+                                    <button id="changeNetwork" class="text-button" type="button">Change</button>
+                                </div>
+                                <div id="passwordSummary" class="setting-row" hidden>
+                                    <span class="setting-label">Password</span>
+                                    <span id="passwordState" class="setting-value muted">Saved</span>
+                                    <button id="changePassword" class="text-button" type="button">Change password</button>
+                                </div>
+                            </div>
+                            <div id="wifiEmpty" class="empty-setting" hidden>
+                                <span>No network configured.</span>
+                                <div class="setup-choice-actions">
+                                    <button id="chooseNetwork" class="secondary-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-wifi"></use></svg><span>Choose network</span></button>
+                                    <button id="enterNetwork" class="secondary-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg><span>Enter manually</span></button>
+                                </div>
+                            </div>
                         </div>
-                        <div id="scanProgress" class="progress" aria-hidden="true" hidden><span></span></div>
-                        <div id="networkList" class="network-list" aria-label="Available Wi-Fi networks"></div>
-                        <button id="otherNetwork" class="network-row network-other" type="button">
-                            <span class="network-leading"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg><span>Other network…</span></span>
-                            <span class="network-meta">Enter manually</span>
-                        </button>
-                    </div>
 
-                    <div id="manualNetworkFields" class="wifi-editor" hidden>
-                        <div class="editor-heading"><strong>Network</strong><button id="cancelManualNetwork" class="text-button" type="button">Cancel</button></div>
-                        <div class="network-grid">
+                        <div id="wifiChooser" class="wifi-editor" hidden>
+                            <div class="editor-heading"><strong>Choose network</strong><button id="cancelNetworkChange" class="text-button" type="button">Cancel</button></div>
+                            <div class="scan-heading">
+                                <span id="scanState" class="scan-state" aria-live="polite"></span>
+                                <button id="scanAgain" class="text-button icon-text" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#icon-refresh-cw"></use></svg><span>Scan again</span></button>
+                            </div>
+                            <div id="scanProgress" class="progress" aria-hidden="true" hidden><span></span></div>
+                            <div id="networkList" class="network-list" aria-label="Available Wi-Fi networks"></div>
+                            <button id="otherNetwork" class="network-row network-other" type="button">
+                                <span class="network-leading"><svg class="icon" aria-hidden="true"><use href="#icon-plus"></use></svg><span>Other network...</span></span>
+                                <span class="network-meta">Enter manually</span>
+                            </button>
+                        </div>
+
+                        <div id="manualNetworkFields" class="wifi-editor" hidden>
+                            <div class="editor-heading"><strong>Network</strong><button id="cancelManualNetwork" class="text-button" type="button">Cancel</button></div>
+                            <div class="network-grid">
+                                <div class="field">
+                                    <label for="ssid">Network name</label>
+                                    <input id="ssid" autocomplete="off" maxlength="32" aria-describedby="ssidError" />
+                                    <p id="ssidError" class="field-error" role="alert" hidden></p>
+                                </div>
+                                <div class="field">
+                                    <label for="wifiSecurity">Security</label>
+                                    <select id="wifiSecurity" aria-describedby="wifiSecurityError">
+                                        <option value="secured">Password protected</option>
+                                        <option value="open">Open</option>
+                                    </select>
+                                    <p id="wifiSecurityError" class="field-error" role="alert" hidden></p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="passwordEditor" class="field password-editor" hidden>
+                            <div class="field-heading"><label for="wifiPassword">Password</label><button id="cancelPasswordChange" class="text-button" type="button">Cancel</button></div>
+                            <div class="password-control">
+                                <input id="wifiPassword" type="password" autocomplete="new-password" maxlength="64" aria-describedby="wifiPasswordError" />
+                                <button id="showPassword" class="inline-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use id="showPasswordIcon" href="#icon-eye"></use></svg><span id="showPasswordText">Show</span></button>
+                            </div>
+                            <p id="wifiPasswordError" class="field-error" role="alert" hidden></p>
+                        </div>
+                    </section>
+
+                    <section class="settings-section" aria-labelledby="tcpTitle">
+                        <div class="section-heading-row">
+                            <h2 id="tcpTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-server"></use></svg><span>TCP</span></h2>
+                            <span id="tcpRuntime" class="runtime-state" hidden></span>
+                        </div>
+
+                        <fieldset id="tcpMode" class="field tcp-mode-field" aria-describedby="tcpModeError">
+                            <legend>Mode</legend>
+                            <div class="segmented-control">
+                                <label class="segmented-option"><input type="radio" name="tcpMode" value="listen" checked /><span>Listen</span></label>
+                                <label class="segmented-option"><input type="radio" name="tcpMode" value="connect" /><span>Connect</span></label>
+                            </div>
+                            <p id="tcpModeError" class="field-error" role="alert" hidden></p>
+                        </fieldset>
+
+                        <div id="tcpListenFields" class="tcp-fields">
+                            <div class="field port-field">
+                                <label for="tcpListenPort">Listening port</label>
+                                <input id="tcpListenPort" type="number" min="0" max="65535" step="1" inputmode="numeric" placeholder="5000" aria-describedby="tcpListenPortError" />
+                                <p id="tcpListenPortError" class="field-error" role="alert" hidden></p>
+                            </div>
+                        </div>
+
+                        <div id="tcpConnectFields" class="tcp-connect-grid" hidden>
                             <div class="field">
-                                <label for="ssid">Network name</label>
-                                <input id="ssid" autocomplete="off" maxlength="32" aria-describedby="ssidError" />
-                                <p id="ssidError" class="field-error" role="alert" hidden></p>
+                                <label for="tcpRemoteHost">Server</label>
+                                <input id="tcpRemoteHost" type="text" maxlength="253" autocomplete="url" inputmode="url" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="server.example.com" aria-describedby="tcpRemoteHostError" />
+                                <p id="tcpRemoteHostError" class="field-error" role="alert" hidden></p>
+                            </div>
+                            <div class="field port-field">
+                                <label for="tcpRemotePort">Port</label>
+                                <input id="tcpRemotePort" type="number" min="0" max="65535" step="1" inputmode="numeric" placeholder="5000" aria-describedby="tcpRemotePortError" />
+                                <p id="tcpRemotePortError" class="field-error" role="alert" hidden></p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="settings-section" aria-labelledby="serialTitle">
+                        <h2 id="serialTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-cable"></use></svg><span>Serial</span></h2>
+                        <div class="serial-grid">
+                            <div class="field">
+                                <label for="baud">Baud</label>
+                                <select id="baud" aria-describedby="baudError"><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option><option>230400</option><option>460800</option><option>921600</option><option>1000000</option></select>
+                                <p id="baudError" class="field-error" role="alert" hidden></p>
                             </div>
                             <div class="field">
-                                <label for="wifiSecurity">Security</label>
-                                <select id="wifiSecurity" aria-describedby="wifiSecurityError">
-                                    <option value="secured">Password protected</option>
-                                    <option value="open">Open</option>
-                                </select>
-                                <p id="wifiSecurityError" class="field-error" role="alert" hidden></p>
+                                <label for="framing">Framing</label>
+                                <select id="framing" aria-describedby="framingError"><option>8N1</option><option>8N2</option><option>8E1</option><option>8O1</option><option>7E1</option><option>7O1</option></select>
+                                <p id="framingError" class="field-error" role="alert" hidden></p>
                             </div>
                         </div>
-                    </div>
+                    </section>
 
-                    <div id="passwordEditor" class="field password-editor" hidden>
-                        <div class="field-heading"><label for="wifiPassword">Password</label><button id="cancelPasswordChange" class="text-button" type="button">Cancel</button></div>
-                        <div class="password-control">
-                            <input id="wifiPassword" type="password" autocomplete="new-password" maxlength="64" aria-describedby="wifiPasswordError" />
-                            <button id="showPassword" class="inline-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use id="showPasswordIcon" href="#icon-eye"></use></svg><span id="showPasswordText">Show</span></button>
+                    <section class="settings-section device-section" aria-labelledby="deviceTitle">
+                        <h2 id="deviceTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-monitor"></use></svg><span>Device</span></h2>
+                        <div class="device-groups">
+                            <section class="device-group" aria-labelledby="buttonTitle">
+                                <h3 id="buttonTitle">PRG button</h3>
+                                <div class="two-field-grid">
+                                    <div class="field">
+                                        <label for="longPressMs">Long press</label>
+                                        <div class="unit-control"><input id="longPressMs" type="number" min="100" max="1000" step="1" inputmode="numeric" aria-describedby="longPressMsError" /><span>ms</span></div>
+                                        <p id="longPressMsError" class="field-error" role="alert" hidden></p>
+                                    </div>
+                                    <div class="field">
+                                        <label for="longPressRepeatMs">Repeat while held</label>
+                                        <div class="unit-control"><input id="longPressRepeatMs" type="number" min="250" max="1000" step="1" inputmode="numeric" aria-describedby="longPressRepeatMsError" /><span>ms</span></div>
+                                        <p id="longPressRepeatMsError" class="field-error" role="alert" hidden></p>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="device-group" aria-labelledby="displayTitle">
+                                <h3 id="displayTitle">Display</h3>
+                                <div class="two-field-grid">
+                                    <div class="field">
+                                        <label for="display">Mode</label>
+                                        <select id="display" aria-describedby="displayError"><option value="text">Live text</option><option value="hex">Live hex</option><option value="stats">Statistics</option><option value="off">Off</option></select>
+                                        <p id="displayError" class="field-error" role="alert" hidden></p>
+                                    </div>
+                                    <div class="field">
+                                        <label for="screenSaverSeconds">Screen saver</label>
+                                        <div class="unit-control"><input id="screenSaverSeconds" type="number" min="0" step="1" inputmode="numeric" placeholder="Off" aria-describedby="screenSaverHelp screenSaverSecondsError" /><span>sec</span></div>
+                                        <p id="screenSaverHelp" class="field-help">Off disables the screen saver.</p>
+                                        <p id="screenSaverSecondsError" class="field-error" role="alert" hidden></p>
+                                    </div>
+                                </div>
+                            </section>
                         </div>
-                        <p id="wifiPasswordError" class="field-error" role="alert" hidden></p>
-                    </div>
-                </section>
+                    </section>
 
-                <section class="settings-section" aria-labelledby="tcpTitle">
-                    <div class="section-heading-row">
-                        <h2 id="tcpTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-server"></use></svg><span>TCP</span></h2>
-                        <span id="tcpRuntime" class="runtime-state" hidden></span>
-                    </div>
-                    <div class="field mode-field">
-                        <label for="tcpMode">Mode</label>
-                        <select id="tcpMode" aria-describedby="tcpModeError">
-                            <option value="listen">Listen for client</option>
-                            <option value="connect">Connect to server</option>
-                        </select>
-                        <p id="tcpModeError" class="field-error" role="alert" hidden></p>
-                    </div>
-                    <div id="tcpListenFields" class="tcp-listen-fields">
-                        <div class="field port-field">
-                            <label for="tcpListenPort">Listening port</label>
-                            <input id="tcpListenPort" type="number" min="0" max="65535" step="1" inputmode="numeric" aria-describedby="tcpListenPortError" />
-                            <p id="tcpListenPortError" class="field-error" role="alert" hidden></p>
+                    <section class="settings-section configuration-ap" aria-labelledby="configurationApTitle">
+                        <div class="switch-row">
+                            <div>
+                                <h2 id="configurationApTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-radio-tower"></use></svg><span>Configuration AP</span></h2>
+                                <p id="setupApHint" class="field-help">Provides local configuration access.</p>
+                            </div>
+                            <label class="switch" aria-label="Configuration AP">
+                                <input id="setupApEnabled" type="checkbox" role="switch" aria-describedby="setupApHint setupApEnabledError" />
+                                <span aria-hidden="true"></span>
+                            </label>
                         </div>
-                    </div>
-                    <div id="tcpConnectFields" class="tcp-connect-grid" hidden>
-                        <div class="field">
-                            <label for="tcpRemoteHost">Server</label>
-                            <input id="tcpRemoteHost" maxlength="253" autocomplete="off" placeholder="server.example.com" aria-describedby="tcpRemoteHostError" />
-                            <p id="tcpRemoteHostError" class="field-error" role="alert" hidden></p>
-                        </div>
-                        <div class="field port-field">
-                            <label for="tcpRemotePort">Port</label>
-                            <input id="tcpRemotePort" type="number" min="0" max="65535" step="1" inputmode="numeric" aria-describedby="tcpRemotePortError" />
-                            <p id="tcpRemotePortError" class="field-error" role="alert" hidden></p>
-                        </div>
-                    </div>
-                </section>
+                        <p id="setupApEnabledError" class="field-error" role="alert" hidden></p>
+                    </section>
+                </form>
 
-                <section class="settings-section" aria-labelledby="serialTitle">
-                    <h2 id="serialTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-cable"></use></svg><span>Serial</span></h2>
-                    <div class="serial-grid">
-                        <div class="field">
-                            <label for="baud">Baud</label>
-                            <select id="baud" aria-describedby="baudError"><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option><option>230400</option><option>460800</option><option>921600</option><option>1000000</option></select>
-                            <p id="baudError" class="field-error" role="alert" hidden></p>
-                        </div>
-                        <div class="field">
-                            <label for="framing">Framing</label>
-                            <select id="framing" aria-describedby="framingError"><option>8N1</option><option>8N2</option><option>8E1</option><option>8O1</option><option>7E1</option><option>7O1</option></select>
-                            <p id="framingError" class="field-error" role="alert" hidden></p>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="settings-section" aria-labelledby="buttonTitle">
-                    <h2 id="buttonTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-mouse-pointer-click"></use></svg><span>Button</span></h2>
-                    <div class="two-field-grid">
-                        <div class="field">
-                            <label for="longPressMs">Long press</label>
-                            <div class="unit-control"><input id="longPressMs" type="number" min="100" max="1000" step="1" inputmode="numeric" aria-describedby="longPressMsError" /><span>ms</span></div>
-                            <p id="longPressMsError" class="field-error" role="alert" hidden></p>
-                        </div>
-                        <div class="field">
-                            <label for="longPressRepeatMs">Repeat while held</label>
-                            <div class="unit-control"><input id="longPressRepeatMs" type="number" min="250" max="1000" step="1" inputmode="numeric" aria-describedby="longPressRepeatMsError" /><span>ms</span></div>
-                            <p id="longPressRepeatMsError" class="field-error" role="alert" hidden></p>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="settings-section" aria-labelledby="displayTitle">
-                    <h2 id="displayTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-monitor"></use></svg><span>Display</span></h2>
-                    <div class="two-field-grid">
-                        <div class="field">
-                            <label for="display">Mode</label>
-                            <select id="display" aria-describedby="displayError"><option value="text">Live text</option><option value="hex">Live hex</option><option value="stats">Statistics</option><option value="off">Off</option></select>
-                            <p id="displayError" class="field-error" role="alert" hidden></p>
-                        </div>
-                        <div class="field">
-                            <label for="screenSaverSeconds">Screen saver</label>
-                            <div class="unit-control"><input id="screenSaverSeconds" type="number" min="0" step="1" inputmode="numeric" placeholder="Off" aria-describedby="screenSaverHelp screenSaverSecondsError" /><span>sec</span></div>
-                            <p id="screenSaverHelp" class="field-help">Off disables the screen saver.</p>
-                            <p id="screenSaverSecondsError" class="field-error" role="alert" hidden></p>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="settings-section configuration-ap" aria-labelledby="configurationApTitle">
-                    <div class="switch-row">
+                <section id="securitySection" class="settings-section security-section" aria-labelledby="securityTitle" hidden>
+                    <h2 id="securityTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-shield-check"></use></svg><span>Security</span></h2>
+                    <div id="securitySummary" class="security-row">
                         <div>
-                            <h2 id="configurationApTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-radio-tower"></use></svg><span>Configuration AP</span></h2>
-                            <p id="setupApHint" class="field-help">Provides local configuration access.</p>
+                            <span class="setting-label">Administrator password</span>
+                            <strong>Set</strong>
                         </div>
-                        <label class="switch" aria-label="Configuration AP">
-                            <input id="setupApEnabled" type="checkbox" role="switch" aria-describedby="setupApHint setupApEnabledError" />
-                            <span aria-hidden="true"></span>
-                        </label>
+                        <div class="security-actions">
+                            <button id="openPasswordChange" class="secondary-button" type="button">Change password</button>
+                            <button id="logoutButton" class="text-button" type="button">Sign out</button>
+                        </div>
                     </div>
-                    <p id="setupApEnabledError" class="field-error" role="alert" hidden></p>
                 </section>
 
-                <div class="save-row">
+                <div id="saveRow" class="save-row" hidden>
                     <div id="saveState" class="save-state" aria-live="polite" hidden>
                         <svg class="icon" aria-hidden="true"><use id="saveStateIcon" href="#icon-circle-check"></use></svg>
                         <span id="saveStateText"></span>
                     </div>
-                    <button id="save" class="primary icon-text" type="submit" disabled><svg class="icon" aria-hidden="true"><use href="#icon-save"></use></svg><span id="saveText">Save changes</span></button>
+                    <button id="save" class="primary icon-text" type="submit" form="configuration" disabled><svg class="icon" aria-hidden="true"><use href="#icon-save"></use></svg><span id="saveText">Save changes</span></button>
                 </div>
-            </form>
-
-            <section id="securitySection" class="settings-section security-section" aria-labelledby="securityTitle" hidden>
-                <h2 id="securityTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-shield-check"></use></svg><span>Security</span></h2>
-                <div id="securitySummary" class="setting-row">
-                    <span class="setting-label">Administrator password</span>
-                    <span class="setting-value muted">Set</span>
-                    <button id="openPasswordChange" class="text-button" type="button">Change password</button>
-                </div>
-                <div id="passwordChangeEditor" class="security-editor" hidden>
-                    <div class="three-field-grid">
-                        <div class="field"><label for="currentAdminPassword">Current password</label><input id="currentAdminPassword" type="password" autocomplete="current-password" /></div>
-                        <div class="field"><label for="newAdminPassword">New password</label><input id="newAdminPassword" type="password" autocomplete="new-password" /></div>
-                        <div class="field"><label for="confirmAdminPassword">Confirm password</label><input id="confirmAdminPassword" type="password" autocomplete="new-password" /></div>
-                    </div>
-                    <p id="passwordChangeError" class="field-error" role="alert" hidden></p>
-                    <p id="passwordChangeFeedback" class="field-help success-text" role="status" hidden></p>
-                    <div class="editor-actions"><button id="cancelPasswordUpdate" class="text-button" type="button">Cancel</button><button id="updatePassword" class="secondary-button" type="button">Update password</button></div>
-                </div>
-                <div class="security-footer"><button id="logoutButton" class="text-button" type="button">Sign out</button></div>
-            </section>
-        </section>
-
-        <section id="statusView" class="view" role="tabpanel" aria-labelledby="statusTab" hidden>
-            <section class="bridge-summary" aria-labelledby="bridgeTitle">
-                <h2 id="bridgeTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-activity"></use></svg><span>Bridge</span></h2>
-                <div id="bridgeState" class="bridge-state" data-state="neutral">Loading…</div>
-                <p id="bridgeDetail" class="bridge-detail"></p>
-            </section>
-
-            <div id="statusContent" class="status-layout" data-stale="false">
-                <section class="status-group" aria-labelledby="networkStatusTitle">
-                    <h2 id="networkStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-network"></use></svg><span>Network</span></h2>
-                    <dl class="status-list">
-                        <div><dt>Wi-Fi</dt><dd id="statusWifi">Loading…</dd></div>
-                        <div><dt>IP</dt><dd id="stationIp">—</dd></div>
-                        <div><dt>Configuration AP</dt><dd id="configurationApState">—</dd></div>
-                    </dl>
-                </section>
-
-                <section class="status-group" aria-labelledby="tcpStatusTitle">
-                    <h2 id="tcpStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-server"></use></svg><span>TCP</span></h2>
-                    <dl class="status-list">
-                        <div><dt>Mode</dt><dd id="statusTcpMode">—</dd></div>
-                        <div><dt>State</dt><dd id="statusTcpState">—</dd></div>
-                        <div><dt id="statusTcpEndpointLabel">Endpoint</dt><dd id="statusTcpEndpoint">—</dd></div>
-                    </dl>
-                </section>
-
-                <section class="status-group" aria-labelledby="serialStatusTitle">
-                    <h2 id="serialStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-cable"></use></svg><span>Serial</span></h2>
-                    <dl class="status-list">
-                        <div><dt>Baud</dt><dd id="statusBaud">—</dd></div>
-                        <div><dt>Framing</dt><dd id="statusFraming">—</dd></div>
-                    </dl>
-                </section>
-
-                <section class="status-group" aria-labelledby="trafficStatusTitle">
-                    <h2 id="trafficStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-arrow-left-right"></use></svg><span>Traffic</span></h2>
-                    <dl class="status-list">
-                        <div><dt>Serial → TCP</dt><dd id="statusS2N">—</dd></div>
-                        <div><dt>TCP → serial</dt><dd id="statusN2S">—</dd></div>
-                        <div><dt>Dropped</dt><dd id="statusDrops">—</dd></div>
-                    </dl>
-                </section>
             </div>
         </section>
 
-        <section id="terminalView" class="view" role="tabpanel" aria-labelledby="terminalTab" hidden>
-            <section id="browserTerminal" class="terminal" data-paused="false">
-                <div class="terminal-meta">
-                    <span id="terminalSerialSettings">—</span>
-                    <span id="terminalConnection" class="connection-state" data-state="warning" aria-live="polite">
-                        <svg class="icon spin" aria-hidden="true"><use id="terminalConnectionIcon" href="#icon-loader-circle"></use></svg>
-                        <span id="terminalConnectionText">Connecting…</span>
-                    </span>
+        <section id="statusView" class="view" role="tabpanel" aria-labelledby="statusTab" hidden>
+            <div class="view-content">
+                <section class="bridge-summary" aria-labelledby="bridgeTitle">
+                    <h2 id="bridgeTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-activity"></use></svg><span>Bridge</span></h2>
+                    <div id="bridgeState" class="bridge-state" data-state="neutral">Loading...</div>
+                    <p id="bridgeDetail" class="bridge-detail"></p>
+                </section>
+
+                <div id="statusContent" class="status-layout" data-stale="false">
+                    <section class="status-group" aria-labelledby="networkStatusTitle">
+                        <h2 id="networkStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-network"></use></svg><span>Network</span></h2>
+                        <dl class="status-list">
+                            <div><dt>Wi-Fi</dt><dd id="statusWifi">Loading...</dd></div>
+                            <div><dt>IP</dt><dd id="stationIp">-</dd></div>
+                            <div><dt>Configuration AP</dt><dd id="configurationApState">-</dd></div>
+                        </dl>
+                    </section>
+
+                    <section class="status-group" aria-labelledby="tcpStatusTitle">
+                        <h2 id="tcpStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-server"></use></svg><span>TCP</span></h2>
+                        <dl class="status-list">
+                            <div><dt>Mode</dt><dd id="statusTcpMode">-</dd></div>
+                            <div><dt>State</dt><dd id="statusTcpState">-</dd></div>
+                            <div><dt id="statusTcpEndpointLabel">Endpoint</dt><dd id="statusTcpEndpoint">-</dd></div>
+                        </dl>
+                    </section>
+
+                    <section class="status-group" aria-labelledby="serialStatusTitle">
+                        <h2 id="serialStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-cable"></use></svg><span>Serial</span></h2>
+                        <dl class="status-list">
+                            <div><dt>Baud</dt><dd id="statusBaud">-</dd></div>
+                            <div><dt>Framing</dt><dd id="statusFraming">-</dd></div>
+                        </dl>
+                    </section>
+
+                    <section class="status-group" aria-labelledby="trafficStatusTitle">
+                        <h2 id="trafficStatusTitle" class="section-title"><svg class="icon section-icon" aria-hidden="true"><use href="#icon-arrow-left-right"></use></svg><span>Traffic</span></h2>
+                        <dl class="status-list">
+                            <div><dt>Serial &rarr; TCP</dt><dd id="statusS2N">-</dd></div>
+                            <div><dt>TCP &rarr; serial</dt><dd id="statusN2S">-</dd></div>
+                            <div><dt>Dropped</dt><dd id="statusDrops">-</dd></div>
+                        </dl>
+                    </section>
                 </div>
-                <div class="terminal-frame">
-                    <div class="terminal-toolbar" aria-label="Terminal controls">
-                        <label class="terminal-control"><span>View</span><select id="terminalMode" aria-label="Terminal view"><option value="text">Text</option><option value="hex">Hex</option></select></label>
-                        <label class="terminal-control"><span>Enter</span><select id="terminalLineEnding" aria-label="Bytes sent by Enter"><option value="crlf">CRLF</option><option value="cr">CR</option><option value="lf">LF</option></select></label>
-                        <label class="terminal-check"><input id="terminalLocalEcho" type="checkbox" /><span>Local echo</span></label>
-                        <div class="terminal-actions">
-                            <button id="terminalPause" class="toolbar-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use id="terminalPauseIcon" href="#icon-pause"></use></svg><span id="terminalPauseText">Pause</span></button>
-                            <button id="terminalClear" class="toolbar-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-trash-2"></use></svg><span>Clear</span></button>
-                        </div>
+            </div>
+        </section>
+
+        <section id="terminalView" class="view terminal-view" role="tabpanel" aria-labelledby="terminalTab" hidden>
+            <div class="view-content terminal-view-content">
+                <section id="browserTerminal" class="terminal" data-paused="false">
+                    <div class="terminal-meta">
+                        <span id="terminalSerialSettings">-</span>
+                        <span id="terminalConnection" class="connection-state" data-state="warning" aria-live="polite">
+                            <svg class="icon spin" aria-hidden="true"><use id="terminalConnectionIcon" href="#icon-loader-circle"></use></svg>
+                            <span id="terminalConnectionText">Connecting...</span>
+                        </span>
                     </div>
-                    <pre id="terminalOutput" class="terminal-output" tabindex="0" aria-label="Serial terminal output" aria-describedby="terminalKeyboardHint"></pre>
-                    <div class="terminal-footer"><span id="terminalCounters">RX 0 B · TX 0 B</span><span id="terminalKeyboardHint">Waiting for terminal connection.</span></div>
-                    <form id="terminalSendForm" class="terminal-compose">
-                        <input id="terminalSendInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Send text…" aria-label="Text to send to the serial port" />
-                        <button id="terminalSend" class="primary icon-text" type="submit"><svg class="icon" aria-hidden="true"><use href="#icon-send"></use></svg><span>Send</span></button>
-                    </form>
-                </div>
-            </section>
+                    <div class="terminal-frame">
+                        <div class="terminal-toolbar" aria-label="Terminal controls">
+                            <div class="terminal-options-row">
+                                <label class="terminal-control"><span>View</span><select id="terminalMode" aria-label="Terminal view"><option value="text">Text</option><option value="hex">Hex</option></select></label>
+                                <label class="terminal-control"><span>Enter</span><select id="terminalLineEnding" aria-label="Bytes sent by Enter"><option value="crlf">CRLF</option><option value="cr">CR</option><option value="lf">LF</option></select></label>
+                            </div>
+                            <div class="terminal-actions-row">
+                                <label class="terminal-check"><input id="terminalLocalEcho" type="checkbox" /><span>Local echo</span></label>
+                                <div class="terminal-actions">
+                                    <button id="terminalPause" class="toolbar-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use id="terminalPauseIcon" href="#icon-pause"></use></svg><span id="terminalPauseText">Pause</span></button>
+                                    <button id="terminalClear" class="toolbar-button icon-text" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-trash-2"></use></svg><span>Clear</span></button>
+                                </div>
+                            </div>
+                        </div>
+                        <pre id="terminalOutput" class="terminal-output" tabindex="0" aria-label="Serial terminal output" aria-describedby="terminalKeyboardHint"></pre>
+                        <div class="terminal-footer"><span id="terminalCounters">RX 0 B - TX 0 B</span><span id="terminalKeyboardHint">Waiting for terminal connection.</span></div>
+                        <form id="terminalSendForm" class="terminal-compose">
+                            <input id="terminalSendInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Send text..." aria-label="Text to send to the serial port" />
+                            <button id="terminalSend" class="primary icon-text" type="submit"><svg class="icon" aria-hidden="true"><use href="#icon-send"></use></svg><span>Send</span></button>
+                        </form>
+                    </div>
+                </section>
+            </div>
         </section>
     </main>
+
+    <dialog id="passwordDialog" class="password-dialog" aria-labelledby="passwordDialogTitle">
+        <div class="dialog-header">
+            <div>
+                <h2 id="passwordDialogTitle">Change administrator password</h2>
+                <p>Changing the password signs this browser out.</p>
+            </div>
+        </div>
+        <div id="passwordChangeEditor" class="dialog-body">
+            <div class="field">
+                <label for="currentAdminPassword">Current password</label>
+                <div class="password-control">
+                    <input id="currentAdminPassword" type="password" autocomplete="current-password" />
+                    <button class="inline-button password-toggle" type="button" data-password-toggle="currentAdminPassword" aria-label="Show current password"><svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg><span>Show</span></button>
+                </div>
+            </div>
+            <div class="field">
+                <label for="newAdminPassword">New password</label>
+                <div class="password-control">
+                    <input id="newAdminPassword" type="password" autocomplete="new-password" />
+                    <button class="inline-button password-toggle" type="button" data-password-toggle="newAdminPassword" aria-label="Show new password"><svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg><span>Show</span></button>
+                </div>
+            </div>
+            <div class="field">
+                <label for="confirmAdminPassword">Confirm password</label>
+                <div class="password-control">
+                    <input id="confirmAdminPassword" type="password" autocomplete="new-password" />
+                    <button class="inline-button password-toggle" type="button" data-password-toggle="confirmAdminPassword" aria-label="Show confirmed password"><svg class="icon" aria-hidden="true"><use href="#icon-eye"></use></svg><span>Show</span></button>
+                </div>
+            </div>
+            <p id="passwordChangeError" class="field-error" role="alert" hidden></p>
+            <p id="passwordChangeFeedback" class="field-help success-text" role="status" hidden></p>
+        </div>
+        <div class="dialog-actions">
+            <button id="cancelPasswordUpdate" class="secondary-button" type="button">Cancel</button>
+            <button id="updatePassword" class="primary" type="button">Change password</button>
+        </div>
+    </dialog>
 
     <script src="/app.js"></script>
 </body>

@@ -109,6 +109,7 @@
         }
 
         selectedView = view;
+        document.body.classList.toggle('terminal-active', view === 'terminalView');
         document.querySelectorAll('[role="tab"]').forEach((candidate) => {
             const selected = candidate === tab;
             candidate.setAttribute('aria-selected', String(selected));
@@ -181,6 +182,25 @@
         }
     }
 
+    function tcpModeValue() {
+        return document.querySelector('input[name="tcpMode"]:checked')?.value || 'listen';
+    }
+
+    function setTcpMode(mode) {
+        const value = mode === 'connect' ? 'connect' : 'listen';
+        document.querySelectorAll('input[name="tcpMode"]').forEach((input) => {
+            input.checked = input.value === value;
+        });
+    }
+
+    function focusField(field) {
+        if (field === 'tcpMode') {
+            document.querySelector('input[name="tcpMode"]:checked')?.focus();
+            return;
+        }
+        $(field)?.focus();
+    }
+
     function clearFieldErrors() {
         [
             'ssid',
@@ -215,6 +235,34 @@
         $('passwordChangeFeedback').hidden = !message;
     }
 
+    function setPasswordToggle(button, shown) {
+        const input = $(button.dataset.passwordToggle);
+        if (!input) return;
+        input.type = shown ? 'text' : 'password';
+        button.querySelector('span').textContent = shown ? 'Hide' : 'Show';
+        setIcon(button.querySelector('use'), shown ? 'eye-off' : 'eye');
+        button.setAttribute('aria-label', `${shown ? 'Hide' : 'Show'} password`);
+    }
+
+    function clearAdminPasswordFields() {
+        ['currentAdminPassword', 'newAdminPassword', 'confirmAdminPassword'].forEach((id) => {
+            $(id).value = '';
+            $(id).type = 'password';
+        });
+        document.querySelectorAll('#passwordDialog [data-password-toggle]').forEach((button) => {
+            setPasswordToggle(button, false);
+        });
+    }
+
+    function closePasswordDialog() {
+        clearAdminPasswordFields();
+        setPasswordChangeError();
+        setPasswordChangeFeedback();
+        if ($('passwordDialog').open) {
+            $('passwordDialog').close();
+        }
+    }
+
     async function fetchAuth() {
         const response = await fetch('/api/auth', { cache: 'no-store' });
         if (!response.ok) {
@@ -234,13 +282,15 @@
     function renderAuthPanel() {
         $('authLoginFields').hidden = true;
         $('authBootstrapFields').hidden = true;
+        $('authPanel').removeAttribute('data-mode');
         setAuthError();
 
         if (!authAvailable) {
             $('authPanel').hidden = false;
+            $('authPanel').dataset.mode = 'unavailable';
             $('authTitle').textContent = 'Management unavailable';
             $('authText').textContent =
-                'Status is available, but sign-in is temporarily unavailable. Retrying automatically…';
+                'Status is available, but sign-in is temporarily unavailable. Retrying automatically...';
             return;
         }
 
@@ -251,38 +301,61 @@
 
         $('authPanel').hidden = false;
         if (!auth.passwordSet && auth.terminalAvailable) {
+            $('authPanel').dataset.mode = 'bootstrap';
             $('authTitle').textContent = 'Secure this device';
             $('authText').textContent =
-                'Create the administrator password before changing device settings.';
+                'Create the administrator password to unlock device setup.';
             $('authBootstrapFields').hidden = false;
             return;
         }
 
         if (!auth.passwordSet) {
+            $('authPanel').dataset.mode = 'info';
             $('authTitle').textContent = 'Administrator password not set';
             $('authText').textContent =
                 'Connect through the Configuration AP to create the administrator password. Status remains available here.';
             return;
         }
 
+        $('authPanel').dataset.mode = 'login';
         $('authTitle').textContent = 'Sign in to configure';
-        $('authText').textContent = 'Status is available without signing in.';
+        $('authText').textContent = 'Status remains available without signing in.';
         $('authLoginFields').hidden = false;
     }
 
-    function applyAccessModel(preferSetup = false) {
-        $('bootView').hidden = true;
-        $('navigation').hidden = false;
-        $('setupTab').hidden = !authAvailable || !auth.authenticated;
-        $('terminalTab').hidden = !(authAvailable && auth.authenticated && auth.terminalAvailable);
-        $('securitySection').hidden = !authAvailable || !auth.authenticated;
+    function showPublicStatus() {
+        selectedView = 'statusView';
+        document.body.classList.remove('terminal-active');
+        $('setupView').hidden = true;
+        $('terminalView').hidden = true;
+        $('statusView').hidden = false;
+    }
 
+    function applyAccessModel(preferSetup = false) {
+        const authenticated = authAvailable && auth.authenticated;
+        const firstUse = authAvailable && !auth.passwordSet && auth.terminalAvailable;
+
+        $('bootView').hidden = true;
+        $('navigation').hidden = !authenticated;
+        $('setupTab').hidden = !authenticated;
+        $('statusTab').hidden = !authenticated;
+        $('terminalTab').hidden = !(authenticated && auth.terminalAvailable);
+        $('securitySection').hidden = !authenticated;
         $('chooseNetwork').hidden = !auth.terminalAvailable;
         renderAuthPanel();
 
-        if (!authAvailable || !auth.authenticated) {
+        if (!authenticated) {
             stopTerminal();
-            selectView('statusView');
+            document.body.classList.remove('terminal-active');
+            if ($('passwordDialog').open) closePasswordDialog();
+            if (firstUse) {
+                selectedView = null;
+                $('setupView').hidden = true;
+                $('statusView').hidden = true;
+                $('terminalView').hidden = true;
+            } else {
+                showPublicStatus();
+            }
             return;
         }
 
@@ -399,6 +472,8 @@
         configurationLoaded = false;
         configurationBaseline = null;
         configCsrfToken = '';
+        $('configuration').hidden = true;
+        $('saveRow').hidden = true;
         stopScanPolling();
         stopTerminal();
         applyAccessModel(false);
@@ -438,14 +513,27 @@
             if (!response.ok) {
                 throw new Error(result.error || 'Could not update the administrator password.');
             }
-            await fetchAuth();
-            $('currentAdminPassword').value = '';
-            $('newAdminPassword').value = '';
-            $('confirmAdminPassword').value = '';
-            $('passwordChangeEditor').hidden = true;
-            $('securitySummary').hidden = false;
-            setPasswordChangeFeedback('Administrator password updated.');
-            announce('Administrator password updated.');
+
+            closePasswordDialog();
+            configurationLoaded = false;
+            configurationBaseline = null;
+            configCsrfToken = '';
+            $('configuration').hidden = true;
+            $('saveRow').hidden = true;
+            stopScanPolling();
+            stopTerminal();
+
+            try {
+                await fetchAuth();
+            } catch {
+                authAvailable = false;
+                auth.authenticated = false;
+                scheduleAuthRetry();
+            }
+
+            applyAccessModel(false);
+            setAuthError('Password changed. Sign in again.');
+            announce('Administrator password changed. Sign in again.');
         } catch (error) {
             setPasswordChangeError(error instanceof Error ? error.message : 'Could not update the administrator password.');
         } finally {
@@ -467,7 +555,7 @@
             ssid: network.ssid,
             wifiSecurity: network.ssid ? network.wifiSecurity : 'unset',
             wifiPassword: network.wifiPassword || '',
-            tcpMode: $('tcpMode').value,
+            tcpMode: tcpModeValue(),
             tcpListenPort: String(fieldNumber('tcpListenPort')),
             tcpRemoteHost: $('tcpRemoteHost').value.trim(),
             tcpRemotePort: String(fieldNumber('tcpRemotePort')),
@@ -816,7 +904,7 @@
     }
 
     function renderTcpFields() {
-        const listen = $('tcpMode').value === 'listen';
+        const listen = tcpModeValue() === 'listen';
         $('tcpListenFields').hidden = !listen;
         $('tcpConnectFields').hidden = listen;
     }
@@ -858,10 +946,10 @@
         $('ssid').value = values.ssid;
         $('wifiSecurity').value = values.wifiSecurity === 'unset' ? 'secured' : values.wifiSecurity;
         $('wifiPassword').value = '';
-        $('tcpMode').value = values.tcpMode;
-        $('tcpListenPort').value = values.tcpListenPort;
+        setTcpMode(values.tcpMode);
+        $('tcpListenPort').value = Number(values.tcpListenPort) ? values.tcpListenPort : '';
         $('tcpRemoteHost').value = values.tcpRemoteHost;
-        $('tcpRemotePort').value = values.tcpRemotePort;
+        $('tcpRemotePort').value = Number(values.tcpRemotePort) ? values.tcpRemotePort : '';
         $('baud').value = values.baud;
         $('framing').value = values.framing;
         $('display').value = values.display;
@@ -990,7 +1078,8 @@
         }
 
         if (!valid) {
-            document.querySelector('[aria-invalid="true"]')?.focus();
+            const firstInvalid = document.querySelector('[aria-invalid="true"]');
+            if (firstInvalid?.id) focusField(firstInvalid.id);
         }
         return valid;
     }
@@ -1048,17 +1137,17 @@
               ? 'connect'
               : null;
 
-        if (fieldMode && $('tcpMode').value !== fieldMode) {
+        if (fieldMode && tcpModeValue() !== fieldMode) {
             setFieldError(
                 'tcpMode',
                 fieldMode === 'listen'
                     ? 'Saved Listen settings need attention. Select Listen for client to correct them.'
                     : 'Saved Connect settings need attention. Select Connect to server to correct them.'
             );
-            $('tcpMode').focus();
+            focusField('tcpMode');
             return;
         }
-        $(field)?.focus();
+        focusField(field);
     }
 
     async function handleSessionExpired() {
@@ -1188,6 +1277,7 @@
         $('setupLoading').hidden = false;
         $('setupUnavailable').hidden = true;
         $('configuration').hidden = true;
+        $('saveRow').hidden = true;
 
         try {
             const response = await fetch('/api/config', { cache: 'no-store' });
@@ -1204,9 +1294,11 @@
             refreshSaveState();
             $('setupLoading').hidden = true;
             $('configuration').hidden = false;
+            $('saveRow').hidden = false;
         } catch (error) {
             $('setupLoading').hidden = true;
             $('setupUnavailable').hidden = false;
+            $('saveRow').hidden = true;
             $('setupUnavailableText').textContent =
                 error instanceof Error ? error.message : 'Settings could not be loaded.';
         } finally {
@@ -1237,10 +1329,15 @@
         const state = status.tcpState;
         const remote = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
         const listenPort = Number(status.tcpListenPort) || 0;
+        const configured = mode === 'listen'
+            ? listenPort > 0
+            : Boolean(status.tcpRemoteHost) && Number(status.tcpRemotePort) > 0;
 
         switch (state) {
             case 'disabled':
-                return { text: 'Current · TCP disabled', state: 'neutral' };
+                return configured
+                    ? { text: 'Current · TCP unavailable', state: 'warning' }
+                    : { text: 'Current · Not configured', state: 'neutral' };
             case 'waiting_for_wifi':
                 return { text: 'Current · Waiting for Wi-Fi', state: 'warning' };
             case 'listening':
@@ -1279,13 +1376,24 @@
         const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
         const remote = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
         const listenPort = Number(status.tcpListenPort) || 0;
+        const tcpConfigured = mode === 'listen'
+            ? listenPort > 0
+            : Boolean(status.tcpRemoteHost) && Number(status.tcpRemotePort) > 0;
         let state = 'neutral';
         let title = 'Not configured';
         let detail = '';
 
-        if (!status.wifiConfigured) {
+        if (!status.wifiConfigured || !tcpConfigured) {
             title = 'Not configured';
-            detail = 'Configure Wi-Fi before using the serial bridge.';
+            if (!status.wifiConfigured && !tcpConfigured) {
+                detail = 'Configure Wi-Fi and TCP before using the serial bridge.';
+            } else if (!status.wifiConfigured) {
+                detail = 'Configure Wi-Fi before using the serial bridge.';
+            } else {
+                detail = mode === 'listen'
+                    ? 'Set a listening port before using the serial bridge.'
+                    : 'Set a server and port before using the serial bridge.';
+            }
         } else if (!status.wifiConnected) {
             title = 'Offline';
             state = 'warning';
@@ -1293,10 +1401,8 @@
         } else {
             switch (status.tcpState) {
                 case 'disabled':
-                    title = 'TCP disabled';
-                    detail = mode === 'listen'
-                        ? 'Set a listening port to make the bridge available.'
-                        : 'Set a remote server and port to make the bridge available.';
+                    title = 'TCP unavailable';
+                    detail = 'TCP is not running.';
                     break;
                 case 'waiting_for_wifi':
                     title = 'Waiting for Wi-Fi';
@@ -1306,12 +1412,12 @@
                 case 'listening':
                     title = 'Ready';
                     state = 'success';
-                    detail = `Listening on port ${listenPort} for a TCP client.`;
+                    detail = `Listening on port ${listenPort.toLocaleString()} for a TCP client.`;
                     break;
                 case 'connecting':
                     title = 'Connecting';
                     state = 'warning';
-                    detail = `Connecting to ${remote}…`;
+                    detail = `Connecting to ${remote}...`;
                     break;
                 case 'retrying':
                     title = 'Retrying';
@@ -1322,8 +1428,8 @@
                     title = 'Active';
                     state = 'success';
                     detail = mode === 'listen'
-                        ? 'TCP client connected. Serial ↔ TCP forwarding is active.'
-                        : `Connected to ${remote}. Serial ↔ TCP forwarding is active.`;
+                        ? 'TCP client connected. Serial to TCP forwarding is active.'
+                        : `Connected to ${remote}. Serial to TCP forwarding is active.`;
                     break;
                 case 'failure':
                     title = 'TCP failure';
@@ -1356,29 +1462,37 @@
             : status.wifiConfigured
               ? 'Not connected'
               : 'Not configured';
-        $('stationIp').textContent = status.stationIp || '—';
+        $('stationIp').textContent = status.stationIp && status.stationIp !== '0.0.0.0' ? status.stationIp : '—';
         $('configurationApState').textContent = status.wifiApActive ? 'On' : 'Off';
 
         const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
+        const listenPort = Number(status.tcpListenPort) || 0;
+        const remotePort = Number(status.tcpRemotePort) || 0;
+        const tcpConfigured = mode === 'listen'
+            ? listenPort > 0
+            : Boolean(status.tcpRemoteHost) && remotePort > 0;
         $('statusTcpMode').textContent = tcpModeText(mode);
-        $('statusTcpState').textContent = tcpStateText(status.tcpState, mode);
+        $('statusTcpState').textContent = status.tcpState === 'disabled' && !tcpConfigured
+            ? 'Not configured'
+            : tcpStateText(status.tcpState, mode);
         if (mode === 'listen') {
             $('statusTcpEndpointLabel').textContent = 'Listening port';
-            $('statusTcpEndpoint').textContent = Number(status.tcpListenPort) ? String(status.tcpListenPort) : '—';
+            $('statusTcpEndpoint').textContent = listenPort ? listenPort.toLocaleString() : '—';
         } else {
             $('statusTcpEndpointLabel').textContent = 'Server';
             $('statusTcpEndpoint').textContent = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
         }
 
-        $('statusBaud').textContent = status.baud || '—';
+        const baud = Number(status.baud) || 0;
+        $('statusBaud').textContent = baud ? baud.toLocaleString() : '—';
         $('statusFraming').textContent = status.framing || '—';
         $('statusS2N').textContent = formatBytes(status.serialToNetworkReceived);
         $('statusN2S').textContent = formatBytes(status.networkToSerialReceived);
         $('statusDrops').textContent =
-            `S→T ${(Number(status.serialToNetworkDropped) || 0).toLocaleString()} · ` +
-            `T→S ${(Number(status.networkToSerialDropped) || 0).toLocaleString()}`;
+            `S\u2192T ${(Number(status.serialToNetworkDropped) || 0).toLocaleString()} \u00b7 ` +
+            `T\u2192S ${(Number(status.networkToSerialDropped) || 0).toLocaleString()}`;
 
-        $('terminalSerialSettings').textContent = `${status.baud || '—'} baud · ${status.framing || '—'}`;
+        $('terminalSerialSettings').textContent = `${baud ? baud.toLocaleString() : '—'} baud \u00b7 ${status.framing || '—'}`;
         renderBridgeState(status);
         renderTcpRuntime(status);
         updateTerminalWriteAccess();
@@ -1782,8 +1896,16 @@
             });
         });
 
+        document.querySelectorAll('input[name="tcpMode"]').forEach((input) => {
+            input.addEventListener('change', () => {
+                setFieldError('tcpMode');
+                clearSaveFeedback();
+                renderTcpFields();
+                refreshSaveState();
+            });
+        });
+
         [
-            'tcpMode',
             'tcpListenPort',
             'tcpRemoteHost',
             'tcpRemotePort',
@@ -1797,14 +1919,12 @@
             $(id).addEventListener('input', () => {
                 setFieldError(id);
                 clearSaveFeedback();
-                if (id === 'tcpMode') renderTcpFields();
                 if (id === 'screenSaverSeconds') updateScreenSaverPresentation();
                 refreshSaveState();
             });
             $(id).addEventListener('change', () => {
                 setFieldError(id);
                 clearSaveFeedback();
-                if (id === 'tcpMode') renderTcpFields();
                 if (id === 'screenSaverSeconds' && fieldNumber(id) === 0) {
                     $(id).value = '';
                     updateScreenSaverPresentation();
@@ -1830,20 +1950,24 @@
         $('bootstrapPasswordConfirm').addEventListener('keydown', (event) => {
             if (event.key === 'Enter') bootstrapPassword();
         });
+
+        document.querySelectorAll('[data-password-toggle]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const input = $(button.dataset.passwordToggle);
+                setPasswordToggle(button, input?.type === 'password');
+            });
+        });
+
         $('openPasswordChange').addEventListener('click', () => {
-            $('securitySummary').hidden = true;
-            $('passwordChangeEditor').hidden = false;
             setPasswordChangeError();
             setPasswordChangeFeedback();
+            $('passwordDialog').showModal();
             $('currentAdminPassword').focus();
         });
-        $('cancelPasswordUpdate').addEventListener('click', () => {
-            $('currentAdminPassword').value = '';
-            $('newAdminPassword').value = '';
-            $('confirmAdminPassword').value = '';
-            $('passwordChangeEditor').hidden = true;
-            $('securitySummary').hidden = false;
-            setPasswordChangeError();
+        $('cancelPasswordUpdate').addEventListener('click', closePasswordDialog);
+        $('passwordDialog').addEventListener('cancel', (event) => {
+            event.preventDefault();
+            closePasswordDialog();
         });
         $('updatePassword').addEventListener('click', updateAdminPassword);
         $('logoutButton').addEventListener('click', logout);
