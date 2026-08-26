@@ -7,6 +7,7 @@
 #include <esp_system.h>
 
 #include "browser_terminal.h"
+#include "management_auth.h"
 #include "network_transport.h"
 #include "serial_port.h"
 #include "wifi_access.h"
@@ -14,7 +15,7 @@
 namespace http_server {
 namespace {
 
-WebServer server(80);
+WebServer server(configuration::kHttpPort);
 configuration::ApplyCallback applyConfiguration = nullptr;
 char csrfToken[33]{};
 bool filesystemReady = false;
@@ -81,24 +82,13 @@ const char *connectionName(network_transport::ConnectionState state) {
     switch (state) {
         case network_transport::ConnectionState::Disabled: return "disabled";
         case network_transport::ConnectionState::WaitingForWifi: return "waiting_for_wifi";
+        case network_transport::ConnectionState::Listening: return "listening";
         case network_transport::ConnectionState::Connecting: return "connecting";
+        case network_transport::ConnectionState::Retrying: return "retrying";
         case network_transport::ConnectionState::Connected: return "connected";
+        case network_transport::ConnectionState::Failure: return "failure";
     }
     return "disabled";
-}
-
-const char *liveViewName(configuration::LiveView view) {
-    return view == configuration::LiveView::Hex ? "hex" : "text";
-}
-
-const char *statusBarName(configuration::StatusBar bar) {
-    switch (bar) {
-        case configuration::StatusBar::Auto: return "auto";
-        case configuration::StatusBar::Serial: return "serial";
-        case configuration::StatusBar::Connection: return "connection";
-        case configuration::StatusBar::Network: return "network";
-    }
-    return "auto";
 }
 
 const char *displayName(const configuration::DeviceConfig &config) {
@@ -110,18 +100,118 @@ bool fromSetupAp() {
     return wifi_access::requestFromSetupAp(server.client());
 }
 
+bool fromLocalInterface() {
+    return wifi_access::requestFromLocalInterface(server.client());
+}
+
+bool matchesHost(const String &hostHeader, const String &expectedHost) {
+    String host = hostHeader;
+    host.trim();
+    return host.equalsIgnoreCase(expectedHost) ||
+        host.equalsIgnoreCase(expectedHost + ":" + String(configuration::kHttpPort));
+}
+
+bool canonicalSetupHost() {
+    return matchesHost(server.hostHeader(), WiFi.softAPIP().toString());
+}
+
+bool canonicalLocalHost() {
+    if (canonicalSetupHost()) return true;
+
+    const IPAddress stationIp = WiFi.localIP();
+    if (stationIp != IPAddress(0, 0, 0, 0) &&
+            matchesHost(server.hostHeader(), stationIp.toString())) {
+        return true;
+    }
+    return matchesHost(server.hostHeader(), wifi_access::mdnsHost());
+}
+
 bool csrfValid() {
     return server.header("X-CSRF-Token") == csrfToken;
 }
 
+void sendJson(const String &body, int status = 200) {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(status, "application/json", body);
+}
+
+bool sessionAuthenticated() {
+    return management_auth::authenticated(server.header("Cookie").c_str());
+}
+
+const char *authenticationState(bool authenticated) {
+    if (!management_auth::passwordSet()) return "password_not_configured";
+    return authenticated ? "authenticated" : "login_required";
+}
+
 void sendForbidden() {
+    server.sendHeader("Cache-Control", "no-store");
     server.send(403, "application/json", "{\"error\":\"configuration_not_allowed\"}");
 }
 
+void sendUnauthorized() {
+    sendJson("{\"error\":\"authentication_required\"}", 401);
+}
+
+void sendAuthError(const char *field, const char *message, int status = 400) {
+    String body = "{\"error\":\"" + String(message) + "\",\"field\":\"" +
+        String(field) + "\"}";
+    sendJson(body, status);
+}
+
+bool canonicalLocalRequest() {
+    return fromLocalInterface() && canonicalLocalHost();
+}
+
+bool requireConfigurationAccess() {
+    if (!canonicalLocalRequest()) {
+        sendForbidden();
+        return false;
+    }
+    if (!management_auth::passwordSet()) {
+        if (fromSetupAp()) return true;
+        sendJson("{\"error\":\"admin_password_required\"}", 403);
+        return false;
+    }
+    if (!sessionAuthenticated()) {
+        sendUnauthorized();
+        return false;
+    }
+    return true;
+}
+
+bool requireSetupAccess() {
+    if (!fromSetupAp() || !canonicalSetupHost()) {
+        sendForbidden();
+        return false;
+    }
+    if (management_auth::passwordSet() && !sessionAuthenticated()) {
+        sendUnauthorized();
+        return false;
+    }
+    return true;
+}
+
+void setSessionCookie() {
+    server.sendHeader(
+        "Set-Cookie",
+        "s2w_session=" + String(management_auth::sessionToken()) +
+            "; HttpOnly; SameSite=Strict; Path=/",
+        true);
+}
+
+void clearSessionCookie() {
+    server.sendHeader(
+        "Set-Cookie",
+        "s2w_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+        true);
+}
+
 bool sameOrigin() {
+    if (!canonicalSetupHost()) return false;
+
     String origin = server.header("Origin");
-    String host = server.hostHeader();
-    if (origin.length() == 0 || host.length() == 0) return false;
+    if (origin.length() == 0) return false;
 
     const int schemeEnd = origin.indexOf("://");
     if (schemeEnd < 0) return false;
@@ -129,11 +219,7 @@ bool sameOrigin() {
     origin = origin.substring(schemeEnd + 3);
     const int pathStart = origin.indexOf('/');
     if (pathStart >= 0) origin = origin.substring(0, pathStart);
-    origin.trim();
-    host.trim();
-    if (origin.endsWith(":80")) origin.remove(origin.length() - 3);
-    if (host.endsWith(":80")) host.remove(host.length() - 3);
-    return origin.equalsIgnoreCase(host);
+    return matchesHost(origin, WiFi.softAPIP().toString());
 }
 
 bool headerContainsToken(const String &header, const char *token) {
@@ -150,10 +236,9 @@ bool headerContainsToken(const String &header, const char *token) {
 }
 
 void handleTerminal() {
-    // The setup AP is the editable/operational local boundary. Normal LAN
-    // clients may observe the terminal but are admitted read-only, matching
-    // the status-only LAN rule.
-    const bool allowTransmit = fromSetupAp();
+    // The terminal carries serial data, so it is part of the editable setup
+    // boundary rather than the status-only LAN surface.
+    if (!requireSetupAccess()) return;
     if (!server.header("Upgrade").equalsIgnoreCase("websocket") ||
             !headerContainsToken(server.header("Connection"), "Upgrade") ||
             server.header("Sec-WebSocket-Version") != "13" ||
@@ -162,39 +247,52 @@ void handleTerminal() {
     }
     if (!browser_terminal::accept(
             server.client(),
-            server.header("Sec-WebSocket-Key").c_str(),
-            allowTransmit)) {
+            server.header("Sec-WebSocket-Key").c_str())) {
         return server.send(503, "text/plain", "Terminal unavailable");
     }
 }
 
-void sendJson(const String &body, int status = 200) {
-    server.send(status, "application/json", body);
+void appendTcpAndSerialConfiguration(
+    String &body,
+    const configuration::DeviceConfig &config) {
+    body += ",\"tcpMode\":\"" + String(configuration::tcpModeName(
+            static_cast<configuration::TcpMode>(config.tcpMode))) + "\"";
+    body += ",\"tcpListenPort\":" + String(config.tcpListenPort);
+    body += ",\"tcpRemoteHost\":\"" + escaped(config.tcpRemoteHost) + "\"";
+    body += ",\"tcpRemotePort\":" + String(config.tcpRemotePort);
+    body += ",\"baud\":" + String(config.baud);
+    body += ",\"framing\":\"" + String(configuration::framingName(
+            static_cast<configuration::Framing>(config.framing))) + "\"";
 }
 
 void handleStatus() {
+    if (!canonicalLocalRequest()) {
+        return server.send(404, "text/plain", "Not found");
+    }
+
     const configuration::DeviceConfig config = configuration::snapshot();
     const wifi_access::Snapshot wifi = wifi_access::snapshot();
     const network_transport::Snapshot transport = network_transport::snapshot();
     const serial_port::Snapshot serial = serial_port::snapshot();
-    String body = "{";
-    body += "\"configurationAllowed\":" + String(fromSetupAp() ? "true" : "false");
+    const bool authenticated = sessionAuthenticated();
+    const bool passwordSet = management_auth::passwordSet();
+    String body;
+    body.reserve(1536);
+    body += "{";
+    body += "\"configurationAllowed\":" + String(
+        (!passwordSet ? fromSetupAp() : authenticated) ? "true" : "false");
+    body += ",\"passwordSet\":" + String(passwordSet ? "true" : "false");
+    body += ",\"authenticated\":" + String(authenticated ? "true" : "false");
+    body += ",\"authState\":\"" + String(authenticationState(authenticated)) + "\"";
+    body += ",\"terminalAvailable\":" + String(fromSetupAp() ? "true" : "false");
     body += ",\"wifiConfigured\":" + String(wifi.stationConfigured ? "true" : "false");
     body += ",\"wifiConnected\":" + String(wifi.stationConnected ? "true" : "false");
-    body += ",\"wifiApActive\":" + String(wifi.apActive ? "true" : "false");
+    body += ",\"wifiApActive\":" + String(wifi.setupApActive ? "true" : "false");
     body += ",\"setupSsid\":\"" + escaped(wifi.setupSsid) + "\"";
     body += ",\"stationIp\":\"" + escaped(ipString(wifi.stationIp)) + "\"";
     body += ",\"tcpState\":\"" + String(connectionName(transport.state)) + "\"";
-    body += ",\"tcpRetrying\":" + String(transport.tcpRetrying ? "true" : "false");
     body += ",\"transportTaskError\":" + String(transport.taskStartError ? "true" : "false");
-    body += ",\"baud\":" + String(config.baud);
-    body += ",\"framing\":\"" + String(configuration::framingName(
-            static_cast<configuration::Framing>(config.framing))) + "\"";
-    body += ",\"display\":\"" + String(displayName(config)) + "\"";
-    body += ",\"liveView\":\"" + String(liveViewName(configuration::liveView(config))) + "\"";
-    body += ",\"statusBar\":\"" + String(statusBarName(configuration::statusBar(config))) + "\"";
-    body += ",\"screenOff\":" + String(configuration::screenOff(config) ? "true" : "false");
-    body += ",\"setupApEnabled\":" + String(configuration::setupApEnabled(config) ? "true" : "false");
+    appendTcpAndSerialConfiguration(body, config);
     body += ",\"serialToNetworkReceived\":" + String(static_cast<unsigned long long>(transport.serialToNetworkReceived));
     body += ",\"serialToNetworkForwarded\":" + String(static_cast<unsigned long long>(transport.serialToNetworkForwarded));
     body += ",\"serialToNetworkDropped\":" + String(static_cast<unsigned long long>(transport.serialToNetworkDropped));
@@ -211,24 +309,109 @@ void handleStatus() {
     sendJson(body);
 }
 
+void handleAuthGet() {
+    if (!canonicalLocalRequest()) return sendForbidden();
+    const bool authenticated = sessionAuthenticated();
+    String body;
+    body.reserve(256);
+    body += "{\"passwordSet\":" + String(
+        management_auth::passwordSet() ? "true" : "false");
+    body += ",\"authenticated\":" + String(authenticated ? "true" : "false");
+    body += ",\"authState\":\"" + String(authenticationState(authenticated)) + "\"";
+    body += ",\"terminalAvailable\":" + String(fromSetupAp() ? "true" : "false");
+    body += ",\"csrfToken\":\"" + String(csrfToken) + "\"}";
+    sendJson(body);
+}
+
+void handleAuthLogin() {
+    if (!canonicalLocalRequest()) return sendForbidden();
+    if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    if (!server.hasArg("password")) {
+        return sendAuthError("password", "password_required");
+    }
+
+    switch (management_auth::login(server.arg("password").c_str())) {
+        case management_auth::LoginResult::Authenticated:
+            setSessionCookie();
+            return sendJson("{\"ok\":true,\"authenticated\":true}");
+        case management_auth::LoginResult::PasswordNotSet:
+            return sendJson("{\"error\":\"password_not_set\"}", 409);
+        case management_auth::LoginResult::RateLimited:
+            server.sendHeader("Retry-After", "1");
+            return sendJson("{\"error\":\"too_many_attempts\"}", 429);
+        case management_auth::LoginResult::InvalidPassword:
+            return sendJson("{\"error\":\"invalid_password\"}", 401);
+    }
+    sendJson("{\"error\":\"login_failed\"}", 500);
+}
+
+void handleAuthLogout() {
+    if (!canonicalLocalRequest()) return sendForbidden();
+    if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    management_auth::logout();
+    clearSessionCookie();
+    sendJson("{\"ok\":true,\"authenticated\":false}");
+}
+
+void handleAuthPassword() {
+    if (!canonicalLocalRequest()) return sendForbidden();
+    if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    management_auth::PasswordResult result;
+    if (!management_auth::passwordSet()) {
+        if (!fromSetupAp()) {
+            return sendJson("{\"error\":\"bootstrap_requires_setup_ap\"}", 403);
+        }
+        if (!server.hasArg("newPassword")) {
+            return sendAuthError("newPassword", "password_required");
+        }
+        result = management_auth::createPassword(
+            server.arg("newPassword").c_str());
+    } else {
+        if (!sessionAuthenticated()) {
+            return sendUnauthorized();
+        }
+        if (!server.hasArg("currentPassword")) {
+            return sendAuthError("currentPassword", "password_required");
+        }
+        if (!server.hasArg("newPassword")) {
+            return sendAuthError("newPassword", "password_required");
+        }
+        result = management_auth::changePassword(
+            server.arg("currentPassword").c_str(),
+            server.arg("newPassword").c_str());
+    }
+
+    switch (result) {
+        case management_auth::PasswordResult::Success:
+            clearSessionCookie();
+            return sendJson("{\"ok\":true}");
+        case management_auth::PasswordResult::Invalid:
+            return sendAuthError("newPassword", "invalid_password");
+        case management_auth::PasswordResult::AlreadySet:
+            return sendJson("{\"error\":\"password_already_set\"}", 409);
+        case management_auth::PasswordResult::CurrentPasswordIncorrect:
+            return sendAuthError("currentPassword", "incorrect_password", 403);
+        case management_auth::PasswordResult::StorageFailure:
+            return sendJson("{\"error\":\"password_save_failed\"}", 500);
+    }
+    sendJson("{\"error\":\"password_change_failed\"}", 500);
+}
+
 void handleConfigGet() {
-    if (!fromSetupAp()) return sendForbidden();
+    if (!requireConfigurationAccess()) return;
     const configuration::DeviceConfig config = configuration::snapshot();
-    String body = "{";
+    String body;
+    body.reserve(768);
+    body += "{";
     body += "\"ssid\":\"" + escaped(config.ssid) + "\"";
     body += ",\"wifiSecurity\":\"" + String(securityName(
             static_cast<configuration::WifiSecurity>(config.wifiSecurity))) + "\"";
     body += ",\"wifiPasswordSaved\":" + String(config.wifiPassword[0] != '\0' ? "true" : "false");
-    body += ",\"tcpHost\":\"" + escaped(config.tcpHost) + "\"";
-    body += ",\"tcpPort\":" + String(config.tcpPort);
-    body += ",\"baud\":" + String(config.baud);
-    body += ",\"framing\":\"" + String(configuration::framingName(
-            static_cast<configuration::Framing>(config.framing))) + "\"";
+    appendTcpAndSerialConfiguration(body, config);
     body += ",\"display\":\"" + String(displayName(config)) + "\"";
-    body += ",\"liveView\":\"" + String(liveViewName(configuration::liveView(config))) + "\"";
-    body += ",\"statusBar\":\"" + String(statusBarName(configuration::statusBar(config))) + "\"";
-    body += ",\"screenOff\":" + String(configuration::screenOff(config) ? "true" : "false");
-    body += ",\"setupApEnabled\":" + String(configuration::setupApEnabled(config) ? "true" : "false");
+    body += ",\"longPressMs\":" + String(config.longPressMs);
+    body += ",\"longPressRepeatMs\":" + String(config.longPressRepeatMs);
+    body += ",\"screenSaverSeconds\":" + String(config.screenSaverSeconds);
     body += ",\"csrfToken\":\"" + String(csrfToken) + "\"";
     body += "}";
     sendJson(body);
@@ -237,6 +420,28 @@ void handleConfigGet() {
 void configError(const char *field, const char *message) {
     String body = "{\"error\":\"" + String(message) + "\",\"field\":\"" + String(field) + "\"}";
     sendJson(body, 400);
+}
+
+bool completeConfigurationRequest() {
+    constexpr const char *fields[] = {
+        "ssid",
+        "wifiSecurity",
+        "wifiPassword",
+        "tcpMode",
+        "tcpListenPort",
+        "tcpRemoteHost",
+        "tcpRemotePort",
+        "baud",
+        "framing",
+        "display",
+        "longPressMs",
+        "longPressRepeatMs",
+        "screenSaverSeconds",
+    };
+    for (const char *field : fields) {
+        if (!server.hasArg(field)) return false;
+    }
+    return true;
 }
 
 void sendValidationError(configuration::ValidationError error) {
@@ -257,34 +462,53 @@ void sendValidationError(configuration::ValidationError error) {
             return configError("wifiSecurity", "invalid_security");
         case configuration::ValidationError::WifiPassword:
             return configError("wifiPassword", "invalid_password");
-        case configuration::ValidationError::TcpHost:
-            return configError("tcpHost", "too_long");
-        case configuration::ValidationError::TcpPort:
-            return configError("tcpPort", "invalid_port");
+        case configuration::ValidationError::TcpMode:
+            return configError("tcpMode", "invalid_mode");
+        case configuration::ValidationError::TcpListenPort:
+            return configError("tcpListenPort", "invalid_port");
+        case configuration::ValidationError::TcpRemoteHost:
+            return configError("tcpRemoteHost", "invalid_host");
+        case configuration::ValidationError::TcpRemotePort:
+            return configError("tcpRemotePort", "invalid_port");
         case configuration::ValidationError::UiPreferences:
             return configError("display", "invalid_display_preferences");
+        case configuration::ValidationError::LongPress:
+            return configError("longPressMs", "invalid_timeout");
+        case configuration::ValidationError::LongPressRepeat:
+            return configError("longPressRepeatMs", "invalid_timeout");
+        case configuration::ValidationError::ScreenSaver:
+            return configError("screenSaverSeconds", "invalid_timeout");
+        default:
+            sendJson("{\"error\":\"invalid_configuration\"}", 500);
+            return;
     }
 }
 
 void handleConfigPost() {
-    if (!fromSetupAp()) return sendForbidden();
+    if (!requireConfigurationAccess()) return;
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    if (!completeConfigurationRequest()) {
+        return configError("configuration", "incomplete_request");
+    }
 
     const configuration::DeviceConfig current = configuration::snapshot();
     configuration::DeviceConfig candidate = current;
     const String ssid = server.arg("ssid");
     const String securityValue = server.arg("wifiSecurity");
     const String password = server.arg("wifiPassword");
-    const String host = server.arg("tcpHost");
-    const String port = server.arg("tcpPort");
+    const String tcpModeValue = server.arg("tcpMode");
+    const String tcpListenPort = server.arg("tcpListenPort");
+    const String tcpRemoteHost = server.arg("tcpRemoteHost");
+    const String tcpRemotePort = server.arg("tcpRemotePort");
     const String baud = server.arg("baud");
     const String framing = server.arg("framing");
     const String display = server.arg("display");
-    const String setupAp = server.arg("setupApEnabled");
+    const String longPress = server.arg("longPressMs");
+    const String longPressRepeat = server.arg("longPressRepeatMs");
+    const String screenSaver = server.arg("screenSaverSeconds");
 
     if (ssid.length() > 32) return configError("ssid", "too_long");
     if (password.length() > 64) return configError("wifiPassword", "too_long");
-    if (host.length() > 253) return configError("tcpHost", "too_long");
     ssid.toCharArray(candidate.ssid, sizeof(candidate.ssid));
     configuration::WifiSecurity security;
     if (!parseSecurity(securityValue, security)) {
@@ -312,12 +536,28 @@ void handleConfigPost() {
         }
     }
 
-    host.toCharArray(candidate.tcpHost, sizeof(candidate.tcpHost));
-    uint32_t portNumber = 0;
-    if (!parseUnsigned(port, portNumber) || portNumber > 65535) {
-        return configError("tcpPort", "invalid_port");
+    configuration::TcpMode tcpMode;
+    if (!configuration::tcpModeFromName(tcpModeValue.c_str(), tcpMode)) {
+        return configError("tcpMode", "invalid_mode");
     }
-    candidate.tcpPort = static_cast<uint16_t>(portNumber);
+    candidate.tcpMode = static_cast<uint8_t>(tcpMode);
+    if (tcpRemoteHost.length() >= sizeof(candidate.tcpRemoteHost)) {
+        return configError("tcpRemoteHost", "too_long");
+    }
+    memset(candidate.tcpRemoteHost, 0, sizeof(candidate.tcpRemoteHost));
+    tcpRemoteHost.toCharArray(candidate.tcpRemoteHost, sizeof(candidate.tcpRemoteHost));
+
+    uint32_t listenPortNumber = 0;
+    if (!parseUnsigned(tcpListenPort, listenPortNumber) || listenPortNumber > 65535) {
+        return configError("tcpListenPort", "invalid_port");
+    }
+    candidate.tcpListenPort = static_cast<uint16_t>(listenPortNumber);
+
+    uint32_t remotePortNumber = 0;
+    if (!parseUnsigned(tcpRemotePort, remotePortNumber) || remotePortNumber > 65535) {
+        return configError("tcpRemotePort", "invalid_port");
+    }
+    candidate.tcpRemotePort = static_cast<uint16_t>(remotePortNumber);
 
     uint32_t baudNumber = 0;
     if (!parseUnsigned(baud, baudNumber)) return configError("baud", "invalid_baud");
@@ -327,11 +567,21 @@ void handleConfigPost() {
         return configError("framing", "invalid_framing");
     }
     candidate.framing = static_cast<uint8_t>(framingValue);
-    if (server.hasArg("setupApEnabled")) {
-        if (setupAp == "true") configuration::setSetupApEnabled(candidate, true);
-        else if (setupAp == "false") configuration::setSetupApEnabled(candidate, false);
-        else return configError("setupApEnabled", "invalid_value");
+    uint32_t longPressNumber = 0;
+    if (!parseUnsigned(longPress, longPressNumber)) {
+        return configError("longPressMs", "invalid_timeout");
     }
+    candidate.longPressMs = longPressNumber;
+    uint32_t longPressRepeatNumber = 0;
+    if (!parseUnsigned(longPressRepeat, longPressRepeatNumber)) {
+        return configError("longPressRepeatMs", "invalid_timeout");
+    }
+    candidate.longPressRepeatMs = longPressRepeatNumber;
+    uint32_t screenSaverNumber = 0;
+    if (!parseUnsigned(screenSaver, screenSaverNumber)) {
+        return configError("screenSaverSeconds", "invalid_timeout");
+    }
+    candidate.screenSaverSeconds = screenSaverNumber;
     configuration::DisplayMode displayValue;
     if (!configuration::displayModeFromName(display.c_str(), displayValue)) {
         return configError("display", "invalid_display");
@@ -351,16 +601,6 @@ void handleConfigPost() {
         }
     }
 
-    if (!configuration::setupApEnabled(candidate)) {
-        const wifi_access::Snapshot wifi = wifi_access::snapshot();
-        const bool wifiChanged = current.wifiSecurity != candidate.wifiSecurity ||
-            strcmp(current.ssid, candidate.ssid) != 0 ||
-            strcmp(current.wifiPassword, candidate.wifiPassword) != 0;
-        if (!wifi.stationConnected || wifiChanged) {
-            return configError("setupApEnabled", "requires_connected_target_wifi");
-        }
-    }
-
     const configuration::ValidationError validation = configuration::validationError(candidate);
     if (validation != configuration::ValidationError::None) {
         return sendValidationError(validation);
@@ -369,26 +609,33 @@ void handleConfigPost() {
     if (!configuration::commit(candidate, applyConfiguration, &runtimeApplied)) {
         return sendJson("{\"error\":\"save_failed\"}", 500);
     }
-    if (!runtimeApplied) return sendJson("{\"error\":\"serial_error\"}", 503);
+    if (!runtimeApplied) {
+        // configuration::commit persists and publishes before applying UART
+        // changes. A 503 here therefore reports an applied-runtime failure,
+        // not a rollback; the saved candidate remains authoritative.
+        return sendJson("{\"error\":\"serial_error\",\"persisted\":true}", 503);
+    }
     sendJson("{\"ok\":true}");
 }
 
 void handleScanPost() {
-    if (!fromSetupAp()) return sendForbidden();
+    if (!requireSetupAccess()) return;
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
     wifi_access::startScan();
     sendJson("{\"ok\":true}", 202);
 }
 
 void handleScanGet() {
-    if (!fromSetupAp()) return sendForbidden();
+    if (!requireSetupAccess()) return;
     const wifi_access::ScanState state = wifi_access::scanState();
     const char *stateName = state == wifi_access::ScanState::Scanning ? "scanning" :
         state == wifi_access::ScanState::Ready ? "ready" :
         state == wifi_access::ScanState::Failed ? "failed" : "idle";
     wifi_access::ScanResult results[32];
     const size_t count = wifi_access::copyScanResults(results, 32);
-    String body = "{\"state\":\"" + String(stateName) + "\",\"networks\":[";
+    String body;
+    body.reserve(4096);
+    body += "{\"state\":\"" + String(stateName) + "\",\"networks\":[";
     for (size_t i = 0; i < count; ++i) {
         if (i != 0) body += ',';
     body += "{\"ssid\":\"" + escaped(results[i].ssid) + "\",\"rssi\":" +
@@ -399,16 +646,40 @@ void handleScanGet() {
     sendJson(body);
 }
 
+void handleCaptiveProbe() {
+    if (!fromSetupAp()) return server.send(404, "text/plain", "Not found");
+
+    // A probe is sent to a public hostname which DNS has mapped to this AP.
+    // An absolute local URL is required because some clients do not resolve
+    // a relative Location against the probe hostname before opening the page.
+    const String setupLocation = "http://" + WiFi.softAPIP().toString() + "/";
+    server.sendHeader("Location", setupLocation, true);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(302, "text/plain", server.method() == HTTP_HEAD ? "" : "Captive portal");
+}
+
 void serveFile(const char *path, const char *contentType) {
+    if (!fromLocalInterface() || !canonicalLocalHost()) {
+        if (fromSetupAp()) return handleCaptiveProbe();
+        return server.send(404, "text/plain", "Not found");
+    }
     if (!filesystemReady) return server.send(500, "text/plain", "LittleFS unavailable");
+
     File file = LittleFS.open(path, "r");
     if (!file) return server.send(404, "text/plain", "Not found");
+    server.sendHeader("Cache-Control", "no-store");
     server.streamFile(file, contentType);
     file.close();
 }
 
 void handleNotFound() {
-    if (server.method() == HTTP_GET && fromSetupAp()) return serveFile("/index.html", "text/html");
+    // DNS sends arbitrary probe hostnames to the setup AP. Only foreign
+    // captive hostnames redirect; unknown paths on the canonical host remain
+    // ordinary 404s.
+    if (fromSetupAp() && !canonicalSetupHost() &&
+            (server.method() == HTTP_GET || server.method() == HTTP_HEAD)) {
+        return handleCaptiveProbe();
+    }
     server.send(404, "text/plain", "Not found");
 }
 
@@ -428,16 +699,30 @@ void begin(configuration::ApplyCallback callback) {
         "Origin",
         "Sec-WebSocket-Key",
         "Sec-WebSocket-Version",
+        "Cookie",
     };
     server.collectHeaders(requestHeaders, sizeof(requestHeaders) / sizeof(requestHeaders[0]));
-    server.on("/", HTTP_GET, []() { serveFile("/index.html", "text/html"); });
-    server.on("/style.css", HTTP_GET, []() { serveFile("/style.css", "text/css"); });
-    server.on("/app.js", HTTP_GET, []() { serveFile("/app.js", "application/javascript"); });
+    server.on("/", HTTP_GET, []() { serveFile("/index.html", "text/html; charset=utf-8"); });
+    server.on("/style.css", HTTP_GET, []() { serveFile("/style.css", "text/css; charset=utf-8"); });
+    server.on("/app.js", HTTP_GET, []() {
+        serveFile("/app.js", "application/javascript; charset=utf-8");
+    });
     server.on("/api/status", HTTP_GET, handleStatus);
+    server.on("/api/auth", HTTP_GET, handleAuthGet);
+    server.on("/api/auth/login", HTTP_POST, handleAuthLogin);
+    server.on("/api/auth/logout", HTTP_POST, handleAuthLogout);
+    server.on("/api/auth/password", HTTP_POST, handleAuthPassword);
     server.on("/api/config", HTTP_GET, handleConfigGet);
     server.on("/api/config", HTTP_POST, handleConfigPost);
     server.on("/api/wifi/scan", HTTP_POST, handleScanPost);
     server.on("/api/wifi/scan", HTTP_GET, handleScanGet);
+    server.on("/generate_204", HTTP_ANY, handleCaptiveProbe);
+    server.on("/gen_204", HTTP_ANY, handleCaptiveProbe);
+    server.on("/hotspot-detect.html", HTTP_ANY, handleCaptiveProbe);
+    server.on("/library/test/success.html", HTTP_ANY, handleCaptiveProbe);
+    server.on("/connecttest.txt", HTTP_ANY, handleCaptiveProbe);
+    server.on("/ncsi.txt", HTTP_ANY, handleCaptiveProbe);
+    server.on("/redirect", HTTP_ANY, handleCaptiveProbe);
     server.on("/terminal", HTTP_GET, handleTerminal);
     server.onNotFound(handleNotFound);
     server.begin();

@@ -13,6 +13,7 @@
 #include "browser_terminal.h"
 #include "serial_port.h"
 #include "transport_buffer.h"
+#include "wifi_access.h"
 
 namespace network_transport {
 namespace {
@@ -30,6 +31,7 @@ uint8_t terminalTxStorage[kTerminalTxCapacity];
 transport_buffer::Buffer serialToNetworkQueue;
 transport_buffer::Buffer networkToSerialQueue;
 transport_buffer::Buffer terminalTxQueue;
+WiFiServer tcpServer(0, 1);
 
 portMUX_TYPE countersLock = portMUX_INITIALIZER_UNLOCKED;
 uint64_t serialToNetworkReceived = 0;
@@ -38,12 +40,11 @@ uint64_t networkToSerialReceived = 0;
 uint64_t networkToSerialForwarded = 0;
 uint64_t terminalToSerialReceived = 0;
 ConnectionState connectionState = ConnectionState::Disabled;
-bool tcpRetrying = false;
 bool taskStartError = false;
-volatile uint32_t transportGeneration = 0;
+uint32_t transportGeneration = 0;
 
 portMUX_TYPE boundaryLock = portMUX_INITIALIZER_UNLOCKED;
-volatile uint32_t transportBoundaryGeneration = 0;
+uint32_t transportBoundaryGeneration = 0;
 volatile bool transportBoundaryActive = false;
 bool transportBoundaryReleaseRequested = false;
 bool networkIoInProgress = false;
@@ -115,6 +116,19 @@ bool takeDnsResult(IPAddress &address, bool &succeeded) {
     dnsComplete = false;
     portEXIT_CRITICAL(&dnsLock);
     return true;
+}
+
+bool dnsLookupInProgress() {
+    portENTER_CRITICAL(&dnsLock);
+    const bool result = dnsInProgress;
+    portEXIT_CRITICAL(&dnsLock);
+    return result;
+}
+
+void discardDnsResult() {
+    portENTER_CRITICAL(&dnsLock);
+    dnsComplete = false;
+    portEXIT_CRITICAL(&dnsLock);
 }
 
 uint32_t currentGeneration() {
@@ -287,24 +301,35 @@ void setConnectionState(ConnectionState state) {
     portEXIT_CRITICAL(&boundaryLock);
 }
 
-void setTcpRetrying(bool retrying) {
-    portENTER_CRITICAL(&countersLock);
-    tcpRetrying = retrying;
-    portEXIT_CRITICAL(&countersLock);
+bool listenConfigured(const configuration::DeviceConfig &config) {
+    return config.tcpMode == static_cast<uint8_t>(configuration::TcpMode::Listen) &&
+        config.tcpListenPort != 0;
 }
 
-bool configuredEndpoint(const configuration::DeviceConfig &config) {
-    return config.tcpHost[0] != '\0' && config.tcpPort != 0;
+bool connectConfigured(const configuration::DeviceConfig &config) {
+    return config.tcpMode == static_cast<uint8_t>(configuration::TcpMode::Connect) &&
+        config.tcpRemoteHost[0] != '\0' && config.tcpRemotePort != 0;
+}
+
+bool localInterfaceClient(const WiFiClient &client) {
+    // The raw TCP bridge belongs to the station/LAN interface. The setup AP
+    // is reserved for configuration and the auxiliary browser terminal.
+    const IPAddress stationIp = WiFi.localIP();
+    return stationIp != IPAddress(0, 0, 0, 0) && client.localIP() == stationIp;
 }
 
 uint32_t reconnectDelay(size_t attempt) {
-    const size_t delayIndex = min(attempt, sizeof(kReconnectDelays) / sizeof(kReconnectDelays[0]) - 1);
+    const size_t delayIndex = min(
+        attempt,
+        sizeof(kReconnectDelays) / sizeof(kReconnectDelays[0]) - 1);
     return kReconnectDelays[delayIndex];
 }
 
 void networkTask(void *) {
     WiFiClient client;
     uint32_t seenGeneration = currentGeneration();
+    uint16_t listeningPort = 0;
+    bool listenerStarted = false;
     uint32_t nextAttemptAt = 0;
     size_t attempt = 0;
     uint8_t chunk[kChunkSize];
@@ -317,6 +342,7 @@ void networkTask(void *) {
     for (;;) {
         const uint32_t now = millis();
         const configuration::DeviceConfig config = configuration::snapshot();
+        const wifi_access::Snapshot wifi = wifi_access::snapshot();
         const uint32_t workBoundaryGeneration = currentBoundaryGeneration();
 
         if (pendingLength != 0 && pendingBoundaryGeneration != workBoundaryGeneration) {
@@ -326,105 +352,182 @@ void networkTask(void *) {
 
         if (boundaryActive()) {
             client.stop();
+            if (listenerStarted) tcpServer.stop();
+            listenerStarted = false;
+            listeningPort = 0;
+            dnsRequested = false;
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
 
         if (seenGeneration != currentGeneration()) {
             client.stop();
+            if (listenerStarted) tcpServer.stop();
+            listenerStarted = false;
+            listeningPort = 0;
             seenGeneration = currentGeneration();
             nextAttemptAt = now;
             attempt = 0;
+            dnsRequested = false;
         }
 
-        if (!configuredEndpoint(config)) {
+        const bool listenMode = config.tcpMode ==
+            static_cast<uint8_t>(configuration::TcpMode::Listen);
+        const bool configured = listenMode ?
+            listenConfigured(config) : connectConfigured(config);
+        if (!configured) {
             client.stop();
+            if (listenerStarted) tcpServer.stop();
+            listenerStarted = false;
+            listeningPort = 0;
             portENTER_CRITICAL(&boundaryLock);
             tcpConnectionWaitingForTerminalTx = false;
             portEXIT_CRITICAL(&boundaryLock);
-            setTcpRetrying(false);
             setConnectionState(ConnectionState::Disabled);
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
-        if (WiFi.status() != WL_CONNECTED) {
-            client.stop();
-            portENTER_CRITICAL(&boundaryLock);
-            tcpConnectionWaitingForTerminalTx = false;
-            portEXIT_CRITICAL(&boundaryLock);
-            setTcpRetrying(false);
-            setConnectionState(ConnectionState::WaitingForWifi);
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
-        if (!client.connected()) {
-            if (static_cast<int32_t>(now - nextAttemptAt) < 0) {
-                setConnectionState(ConnectionState::Connecting);
-                vTaskDelay(pdMS_TO_TICKS(20));
+        if (listenMode) {
+            if (!wifi.stationConnected) {
+                client.stop();
+                if (listenerStarted) tcpServer.stop();
+                listenerStarted = false;
+                listeningPort = 0;
+                setConnectionState(ConnectionState::WaitingForWifi);
+                vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
 
-            setConnectionState(ConnectionState::Connecting);
-            setTcpRetrying(false);
-            IPAddress serverAddress;
-            bool addressReady = serverAddress.fromString(config.tcpHost);
-            if (!addressReady && !dnsRequested) {
-                dnsRequestGeneration = currentGeneration();
-                startDnsLookup(config.tcpHost);
-                dnsRequested = true;
+            if (!listenerStarted || listeningPort != config.tcpListenPort) {
+                client.stop();
+                if (listenerStarted) tcpServer.stop();
+                listenerStarted = false;
+                listeningPort = 0;
+                if (beginNetworkIo(workBoundaryGeneration, false)) {
+                    tcpServer.begin(config.tcpListenPort);
+                    if (tcpServer) {
+                        tcpServer.setNoDelay(true);
+                        listenerStarted = true;
+                        listeningPort = config.tcpListenPort;
+                        setConnectionState(ConnectionState::Listening);
+                    } else {
+                        tcpServer.stop();
+                    }
+                    endNetworkIo();
+                }
+                if (!listenerStarted) {
+                    setConnectionState(ConnectionState::Failure);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    continue;
+                }
             }
-            if (!addressReady && dnsRequested) {
-                bool lookupSucceeded = false;
-                if (!takeDnsResult(serverAddress, lookupSucceeded)) {
+
+            if (!client.connected()) {
+                client.stop();
+                WiFiClient accepted;
+                if (beginNetworkIo(workBoundaryGeneration, true)) {
+                    accepted = tcpServer.accept();
+                    if (accepted && localInterfaceClient(accepted)) {
+                        client = accepted;
+                        client.setNoDelay(true);
+                        // Publish TCP ownership while network I/O is still
+                        // reserved. Browser TX admission cannot slip between
+                        // the reservation and the Connected state.
+                        setConnectionState(ConnectionState::Connected);
+                    }
+                    endNetworkIo();
+                }
+                if (!client.connected()) {
+                    accepted.stop();
+                    setConnectionState(ConnectionState::Listening);
                     vTaskDelay(pdMS_TO_TICKS(1));
                     continue;
                 }
+            }
+        } else {
+            if (listenerStarted) {
+                tcpServer.stop();
+                listenerStarted = false;
+                listeningPort = 0;
+            }
+
+            if (!wifi.stationConnected) {
+                client.stop();
+                portENTER_CRITICAL(&boundaryLock);
+                tcpConnectionWaitingForTerminalTx = false;
+                portEXIT_CRITICAL(&boundaryLock);
                 dnsRequested = false;
-                if (!lookupSucceeded || dnsRequestGeneration != currentGeneration()) {
-                    client.stop();
-                    nextAttemptAt = now + reconnectDelay(attempt++);
-                    setTcpRetrying(true);
-                    setConnectionState(ConnectionState::Connecting);
+                setConnectionState(ConnectionState::WaitingForWifi);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
+
+            if (!client.connected()) {
+                if (static_cast<int32_t>(now - nextAttemptAt) < 0) {
+                    setConnectionState(ConnectionState::Retrying);
                     vTaskDelay(pdMS_TO_TICKS(20));
                     continue;
                 }
-                addressReady = true;
-            }
-            if (!addressReady) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-                continue;
-            }
 
-            // The TCP client is owned exclusively by this task. Mark the
-            // connection attempt as network I/O so a configuration boundary
-            // cannot release while connect is using the client.
-            bool connected = false;
-            if (beginNetworkIo(workBoundaryGeneration, true)) {
-                connected = client.connect(serverAddress, config.tcpPort, 1000);
-                if (connected) {
-                    client.setNoDelay(true);
-                    // Publish ownership before releasing the connect guard.
-                    // Browser TX cannot enter between a connected socket and
-                    // the state that grants TCP exclusive UART ownership.
-                    setTcpRetrying(false);
-                    setConnectionState(ConnectionState::Connected);
-                    attempt = 0;
+                setConnectionState(ConnectionState::Connecting);
+                IPAddress serverAddress;
+                bool addressReady = serverAddress.fromString(config.tcpRemoteHost);
+                if (!addressReady && !dnsRequested) {
+                    if (dnsLookupInProgress()) {
+                        vTaskDelay(pdMS_TO_TICKS(1));
+                        continue;
+                    }
+                    discardDnsResult();
+                    dnsRequestGeneration = currentGeneration();
+                    startDnsLookup(config.tcpRemoteHost);
+                    dnsRequested = true;
                 }
-                endNetworkIo();
-            }
-            if (!connected) {
-                if (connectionWaitingForTerminalTx()) {
+                if (!addressReady && dnsRequested) {
+                    bool lookupSucceeded = false;
+                    if (!takeDnsResult(serverAddress, lookupSucceeded)) {
+                        vTaskDelay(pdMS_TO_TICKS(1));
+                        continue;
+                    }
+                    dnsRequested = false;
+                    if (!lookupSucceeded || dnsRequestGeneration != currentGeneration()) {
+                        client.stop();
+                        nextAttemptAt = now + reconnectDelay(attempt++);
+                        setConnectionState(ConnectionState::Retrying);
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        continue;
+                    }
+                    addressReady = true;
+                }
+                if (!addressReady) {
                     vTaskDelay(pdMS_TO_TICKS(1));
                     continue;
                 }
-                client.stop();
-                nextAttemptAt = now + reconnectDelay(attempt++);
-                setTcpRetrying(true);
-                setConnectionState(ConnectionState::Connecting);
-                vTaskDelay(pdMS_TO_TICKS(20));
-                continue;
+
+                // The TCP client is owned exclusively by this task. Mark the
+                // connection attempt as network I/O so a configuration
+                // boundary cannot release while connect is using the client.
+                bool connected = false;
+                if (beginNetworkIo(workBoundaryGeneration, true)) {
+                    connected = client.connect(serverAddress, config.tcpRemotePort, 1000);
+                    if (connected) {
+                        client.setNoDelay(true);
+                        setConnectionState(ConnectionState::Connected);
+                        attempt = 0;
+                    }
+                    endNetworkIo();
+                }
+                if (!connected) {
+                    if (connectionWaitingForTerminalTx()) {
+                        vTaskDelay(pdMS_TO_TICKS(1));
+                        continue;
+                    }
+                    client.stop();
+                    nextAttemptAt = millis() + reconnectDelay(attempt++);
+                    setConnectionState(ConnectionState::Retrying);
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                    continue;
+                }
             }
         }
 
@@ -488,9 +591,12 @@ void networkTask(void *) {
 
         if (!client.connected()) {
             client.stop();
-            nextAttemptAt = millis() + reconnectDelay(attempt++);
-            setTcpRetrying(true);
-            setConnectionState(ConnectionState::Connecting);
+            if (listenMode) {
+                setConnectionState(ConnectionState::Listening);
+            } else {
+                nextAttemptAt = millis() + reconnectDelay(attempt++);
+                setConnectionState(ConnectionState::Retrying);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -579,6 +685,7 @@ void begin() {
     const BaseType_t serialTaskResult = xTaskCreatePinnedToCore(
         serialTxTask, "serialTxTask", 4096, nullptr, 2, nullptr, 0);
     taskStartError = networkTaskResult != pdPASS || serialTaskResult != pdPASS;
+    if (taskStartError) setConnectionState(ConnectionState::Failure);
 }
 
 void serialBytesReceived(const uint8_t *data, size_t length) {
@@ -596,10 +703,12 @@ void serialBytesReceived(const uint8_t *data, size_t length) {
 
 bool submitTerminalToSerial(const uint8_t *data, size_t length) {
     if (data == nullptr || length == 0 || length > kTerminalTxCapacity) return false;
+    if (serial_port::snapshot().error) return false;
 
     portENTER_CRITICAL(&boundaryLock);
     const bool allowed = !transportBoundaryActive &&
-        !networkIoInProgress && !tcpConnectionWaitingForTerminalTx &&
+        !networkIoInProgress &&
+        !tcpConnectionWaitingForTerminalTx &&
         connectionState != ConnectionState::Connected &&
         transport_buffer::pushIfFits(terminalTxQueue, data, length);
     portEXIT_CRITICAL(&boundaryLock);
@@ -652,10 +761,9 @@ void endTransportBoundary() {
 Snapshot snapshot() {
     Snapshot result{};
     portENTER_CRITICAL(&boundaryLock);
-    result.state = connectionState;
+    result.state = taskStartError ? ConnectionState::Failure : connectionState;
     portEXIT_CRITICAL(&boundaryLock);
     portENTER_CRITICAL(&countersLock);
-    result.tcpRetrying = tcpRetrying;
     result.taskStartError = taskStartError;
     result.serialToNetworkReceived = serialToNetworkReceived;
     result.serialToNetworkForwarded = serialToNetworkForwarded;

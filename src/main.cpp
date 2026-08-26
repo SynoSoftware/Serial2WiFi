@@ -5,6 +5,7 @@
 #include "browser_terminal.h"
 #include "configuration.h"
 #include "http_server.h"
+#include "management_auth.h"
 #include "network_transport.h"
 #include "oled_display.h"
 #include "prg_button.h"
@@ -13,127 +14,107 @@
 
 namespace {
 
+bool baudScanStarted = false;
+bool baudScanFinished = false;
+uint32_t baudScanStart = 0;
+
 bool applyConfiguration(
     const configuration::DeviceConfig &previous,
     const configuration::DeviceConfig &next) {
     const bool serialChanged = previous.baud != next.baud || previous.framing != next.framing;
-    const bool serverChanged = previous.tcpPort != next.tcpPort ||
-        strcmp(previous.tcpHost, next.tcpHost) != 0;
+    const bool modeChanged = previous.tcpMode != next.tcpMode;
+    const bool listenEndpointChanged = previous.tcpListenPort != next.tcpListenPort;
+    const bool remoteEndpointChanged = previous.tcpRemotePort != next.tcpRemotePort ||
+        strcmp(previous.tcpRemoteHost, next.tcpRemoteHost) != 0;
+    const bool transportChanged = modeChanged ||
+        (next.tcpMode == static_cast<uint8_t>(configuration::TcpMode::Listen) ?
+            listenEndpointChanged : remoteEndpointChanged);
     const bool wifiChanged = previous.wifiSecurity != next.wifiSecurity ||
         strcmp(previous.ssid, next.ssid) != 0 ||
         strcmp(previous.wifiPassword, next.wifiPassword) != 0;
-    const bool setupApChanged =
-        configuration::setupApEnabled(previous) != configuration::setupApEnabled(next);
+
+    if (previous.longPressMs != next.longPressMs) {
+        prg_button::setLongPressMs(next.longPressMs);
+    }
+    if (previous.longPressRepeatMs != next.longPressRepeatMs) {
+        prg_button::setLongPressRepeatMs(next.longPressRepeatMs);
+    }
 
     bool serialApplied = true;
-    if (serialChanged || serverChanged) network_transport::beginTransportBoundary();
+    if (serialChanged || transportChanged) network_transport::beginTransportBoundary();
     if (serialChanged) {
         // UART reconfiguration may invalidate writes. Accepted browser bytes
         // must finish through the old UART before that operation begins.
         network_transport::waitForTerminalTxDrain();
         serialApplied = serial_port::reconfigure(next);
     }
-    if (serialChanged || serverChanged) network_transport::endTransportBoundary();
+    if (serialChanged || transportChanged) network_transport::endTransportBoundary();
     if (wifiChanged) {
         wifi_access::configurationChanged(next);
-        if (!serialChanged && !serverChanged) network_transport::requestReconnect();
-    }
-    if (setupApChanged && !wifiChanged) {
-        wifi_access::setSetupApEnabled(configuration::setupApEnabled(next));
+        if (!serialChanged && !transportChanged) network_transport::requestReconnect();
     }
     return serialApplied;
 }
 
-bool commitLocalDisplayChange(const configuration::DeviceConfig &candidate) {
-    bool runtimeApplied = false;
-    const bool persisted = configuration::commit(candidate, applyConfiguration, &runtimeApplied);
-    if (!persisted || !runtimeApplied) prg_button::reportSaveFailed();
-    return persisted && runtimeApplied;
-}
-
-void applyDisplayMenuAction(oled_display::MenuAction action) {
-    if (action == oled_display::MenuAction::None) return;
-
-    configuration::DeviceConfig candidate = configuration::snapshot();
-    if (action == oled_display::MenuAction::ToggleLiveView) {
-        const configuration::LiveView view = configuration::liveView(candidate);
-        const configuration::LiveView next = view == configuration::LiveView::Text ?
-            configuration::LiveView::Hex : configuration::LiveView::Text;
-        configuration::setLiveView(candidate, next);
-        const auto mode = static_cast<configuration::DisplayMode>(candidate.display);
-        if (mode == configuration::DisplayMode::Text || mode == configuration::DisplayMode::Hex) {
-            candidate.display = static_cast<uint8_t>(configuration::liveDisplayMode(candidate));
-        }
-    } else if (action == oled_display::MenuAction::CycleStatusBar) {
-        const uint8_t current = static_cast<uint8_t>(configuration::statusBar(candidate));
-        configuration::setStatusBar(candidate, static_cast<configuration::StatusBar>((current + 1) % 4));
-    } else if (action == oled_display::MenuAction::ToggleScreen) {
-        const bool wasOff = configuration::screenOff(candidate);
-        configuration::setScreenOff(candidate, !wasOff);
-        if (wasOff && candidate.display == static_cast<uint8_t>(configuration::DisplayMode::Off)) {
-            candidate.display = static_cast<uint8_t>(configuration::liveDisplayMode(candidate));
-        }
-    }
-    commitLocalDisplayChange(candidate);
-}
-
-void toggleLiveAndStatistics() {
-    configuration::DeviceConfig candidate = configuration::snapshot();
-    if (configuration::screenOff(candidate)) return;
-    const auto mode = static_cast<configuration::DisplayMode>(candidate.display);
-    candidate.display = static_cast<uint8_t>(mode == configuration::DisplayMode::Stats ?
-        configuration::liveDisplayMode(candidate) : configuration::DisplayMode::Stats);
-    commitLocalDisplayChange(candidate);
+bool factoryReset() {
+    // A factory reset must recover the setup path, not merely forget the
+    // station settings. Each module clears the NVS namespace it owns; this
+    // deliberately leaves firmware and non-application flash data untouched.
+    // Reboot is deliberately gated on PRG release. Applying the factory
+    // configuration live here would block that result/release phase while
+    // transport and Wi-Fi tear down and restart; the persisted defaults take
+    // effect on the imminent reboot instead.
+    const bool configurationCleared = configuration::factoryReset(nullptr);
+    const bool identityCleared = wifi_access::clearIdentity();
+    const bool passwordCleared = management_auth::clearPassword();
+    return configurationCleared && identityCleared && passwordCleared;
 }
 
 void serviceButtonActions() {
     if (prg_button::takeSingleClick()) {
-        if (oled_display::menuOpen()) {
-            oled_display::moveMenuNext();
-        } else {
-            const configuration::DeviceConfig config = configuration::snapshot();
-            if (configuration::screenOff(config)) {
-                // The wake click is consumed: restoring the previous page is
-                // less surprising than waking and advancing it in one action.
-                applyDisplayMenuAction(oled_display::MenuAction::ToggleScreen);
-            } else if (oled_display::setupPageActive(
-                           config, serial_port::snapshot().trafficSeen)) {
-                oled_display::advanceSetupPage();
-            } else {
-                toggleLiveAndStatistics();
-            }
-        }
+        const configuration::DeviceConfig config = configuration::snapshot();
+        const wifi_access::Snapshot wifi = wifi_access::snapshot();
+        oled_display::handleShortClick(
+            config,
+            wifi.setupApActive,
+            serial_port::snapshot().trafficSeen);
     }
 
     prg_button::HoldEvent hold{};
     if (prg_button::takeHold(hold)) {
-        if (oled_display::menuOpen()) {
-            applyDisplayMenuAction(oled_display::selectMenuItem());
-        } else {
+        oled_display::noteUserInteraction();
+        if (hold.first) {
+            baudScanStarted = false;
+            baudScanFinished = false;
+        }
+        const oled_display::PageAction pageAction = oled_display::currentPageAction();
+        if (!hold.resetEligible && !baudScanFinished && pageAction != nullptr) {
             const configuration::DeviceConfig config = configuration::snapshot();
-            const bool baudPage = oled_display::setupBaudPageActive(
-                config, serial_port::snapshot().trafficSeen);
-            if (baudPage && !hold.resetEligible) {
-                configuration::DeviceConfig candidate = config;
-                candidate.baud = configuration::nextBaud(candidate.baud);
-                bool runtimeApplied = false;
-                const bool persisted = configuration::commit(candidate, applyConfiguration, &runtimeApplied);
-                prg_button::reportBaudCommit(persisted && runtimeApplied);
-            } else if (!hold.resetEligible) {
-                oled_display::openMenu();
+            if (!baudScanStarted) {
+                baudScanStart = config.baud;
+                baudScanStarted = true;
+            }
+
+            configuration::DeviceConfig candidate = config;
+            pageAction(candidate);
+            const bool completesCycle = candidate.baud == baudScanStart;
+            bool runtimeApplied = false;
+            const bool persisted = configuration::commit(candidate, applyConfiguration, &runtimeApplied);
+            if (!persisted || !runtimeApplied) {
+                baudScanFinished = true;
+                prg_button::reportSaveFailed();
+            } else if (completesCycle) {
+                baudScanFinished = true;
             }
         }
     }
 
     if (prg_button::takeFactoryResetRequest()) {
-        prg_button::reportFactoryReset(configuration::factoryReset(applyConfiguration));
+        prg_button::reportFactoryReset(factoryReset());
     }
 
     if (prg_button::restartPending()) ESP.restart();
 
-    // Process a click/hold before expiring the menu. Interaction at the
-    // timeout boundary is still interaction and must refresh the menu timer.
-    oled_display::serviceMenuTimeout(prg_button::isPressed());
 }
 
 oled_display::RuntimeStatus runtimeStatus() {
@@ -141,8 +122,11 @@ oled_display::RuntimeStatus runtimeStatus() {
     const network_transport::Snapshot transport = network_transport::snapshot();
     const serial_port::Snapshot serial = serial_port::snapshot();
     oled_display::RuntimeStatus result{};
-    result.apActive = wifi.apActive;
+    result.setupApActive = wifi.setupApActive;
+    result.stationConfigured = wifi.stationConfigured;
     result.stationConnected = wifi.stationConnected;
+    result.stationRssi = wifi.stationRssi;
+    strncpy(result.stationSsid, wifi.stationSsid, sizeof(result.stationSsid) - 1);
     result.tcpConnected = transport.state == network_transport::ConnectionState::Connected;
     result.serialError = serial.error;
     strncpy(result.setupSsid, wifi.setupSsid, sizeof(result.setupSsid) - 1);
@@ -162,16 +146,17 @@ oled_display::RuntimeStatus runtimeStatus() {
 }  // namespace
 
 void setup() {
-    prg_button::begin();
     configuration::begin();
+    const configuration::DeviceConfig initialConfig = configuration::snapshot();
+    prg_button::begin(initialConfig.longPressMs, initialConfig.longPressRepeatMs);
     wifi_access::begin();
+    management_auth::begin();
     oled_display::begin();
     network_transport::begin();
     browser_terminal::begin();
     serial_port::setReceiveCallback(network_transport::serialBytesReceived);
     serial_port::begin(configuration::snapshot());
     http_server::begin(applyConfiguration);
-    prg_button::bootComplete();
 }
 
 void loop() {

@@ -11,12 +11,19 @@
 namespace browser_terminal {
 namespace {
 
-constexpr size_t kMaxClients = 4;
+// Configuration and diagnostics are single-operator activities. Supporting
+// extra browsers would permanently reserve scarce internal DRAM for idle clients.
+// The terminal only needs to carry small typed/pasted operator input, so keep
+// the inbound WebSocket frame storage tight.
+constexpr size_t kMaxClients = 1;
 // Terminal TX is admitted as one bounded frame so the UART path never needs
 // an unbounded message buffer or a blocking WebSocket callback.
-constexpr size_t kMaxTerminalPayload = 1024;
+constexpr size_t kReceiveBufferSize = 128;
+constexpr size_t kMaxTerminalPayload = kReceiveBufferSize - 6;
 constexpr size_t kSerialChunkSize = 256;
-constexpr size_t kReceiveBufferSize = 1056;
+static_assert(
+    kMaxTerminalPayload + 6 == kReceiveBufferSize,
+    "Terminal receive payload must fit the fixed WebSocket frame buffer.");
 constexpr char kWebSocketGuid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 struct Client {
@@ -28,7 +35,6 @@ struct Client {
     uint8_t outgoingFrame[kSerialChunkSize + 10];
     size_t outgoingLength;
     size_t outgoingOffset;
-    bool canTransmit;
     bool active;
 };
 
@@ -56,7 +62,6 @@ void closeClient(Client &client) {
     client.binaryMessageInProgress = false;
     client.outgoingLength = 0;
     client.outgoingOffset = 0;
-    client.canTransmit = false;
     client.active = false;
 }
 
@@ -142,7 +147,6 @@ bool readAvailable(Client &client) {
 }
 
 bool binaryFrameAccepted(const Client &client, const uint8_t *data, size_t length) {
-    if (!client.canTransmit) return false;
     return network_transport::submitTerminalToSerial(data, length);
 }
 
@@ -193,7 +197,7 @@ ParseResult parseOneFrame(Client &client) {
         return ParseResult::NeedMoreData;
     }
 
-    uint8_t *mask = client.receiveBuffer + messagePrefix + headerLength - 4;
+    const uint8_t *mask = client.receiveBuffer + messagePrefix + headerLength - 4;
     uint8_t *payload = client.receiveBuffer + messagePrefix + headerLength;
     for (size_t i = 0; i < payloadLength; ++i) payload[i] ^= mask[i % 4];
 
@@ -302,7 +306,6 @@ void begin() {
         client.binaryMessageInProgress = false;
         client.outgoingLength = 0;
         client.outgoingOffset = 0;
-        client.canTransmit = false;
         client.active = false;
     }
     portENTER_CRITICAL(&pendingLock);
@@ -310,7 +313,7 @@ void begin() {
     portEXIT_CRITICAL(&pendingLock);
 }
 
-bool accept(WiFiClient client, const char *webSocketKey, bool allowTransmit) {
+bool accept(WiFiClient client, const char *webSocketKey) {
     if (!client || webSocketKey == nullptr || webSocketKey[0] == '\0') return false;
 
     Client *slot = nullptr;
@@ -350,7 +353,6 @@ bool accept(WiFiClient client, const char *webSocketKey, bool allowTransmit) {
     client.setNoDelay(true);
     slot->socket = client;
     slot->receiveLength = 0;
-    slot->canTransmit = allowTransmit;
     slot->active = true;
     return true;
 }

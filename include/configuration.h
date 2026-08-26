@@ -4,9 +4,17 @@
 
 namespace configuration {
 
-constexpr uint16_t kSchema = 2;
-constexpr uint16_t kLegacySchema = 1;
+constexpr uint16_t kSchema = 7;
+constexpr uint16_t kHttpPort = 80;
 constexpr uint32_t kDefaultBaud = 19200;
+constexpr uint32_t kDefaultLongPressMs = 250;
+constexpr uint32_t kDefaultLongPressRepeatMs = 500;
+constexpr uint32_t kDefaultScreenSaverSeconds = 60;
+constexpr uint32_t kMinimumLongPressMs = 100;
+constexpr uint32_t kMaximumLongPressMs = 1000;
+constexpr uint32_t kMinimumLongPressRepeatMs = 250;
+constexpr uint32_t kMaximumLongPressRepeatMs = 1000;
+constexpr uint32_t kMinimumScreenSaverSeconds = 5;
 
 enum class Framing : uint8_t {
     EightN1 = 0,
@@ -42,6 +50,11 @@ enum class WifiSecurity : uint8_t {
     Secured,
 };
 
+enum class TcpMode : uint8_t {
+    Listen = 0,
+    Connect,
+};
+
 #pragma pack(push, 1)
 struct DeviceConfig {
     uint16_t schema;
@@ -52,8 +65,13 @@ struct DeviceConfig {
     uint8_t uiPreferences;
     char ssid[33];
     char wifiPassword[65];
-    char tcpHost[254];
-    uint16_t tcpPort;
+    uint8_t tcpMode;
+    uint16_t tcpListenPort;
+    char tcpRemoteHost[254];
+    uint16_t tcpRemotePort;
+    uint32_t longPressMs;
+    uint32_t longPressRepeatMs;
+    uint32_t screenSaverSeconds;
 };
 #pragma pack(pop)
 
@@ -68,9 +86,14 @@ enum class ValidationError : uint8_t {
     WifiSsid,
     WifiSecurity,
     WifiPassword,
-    TcpHost,
-    TcpPort,
+    TcpMode,
+    TcpListenPort,
+    TcpRemoteHost,
+    TcpRemotePort,
     UiPreferences,
+    LongPress,
+    LongPressRepeat,
+    ScreenSaver,
 };
 
 DeviceConfig factoryDefaults();
@@ -84,6 +107,9 @@ bool factoryReset(ApplyCallback apply, bool *runtimeApplied = nullptr);
 ValidationError validationError(const DeviceConfig &config);
 bool validate(const DeviceConfig &config);
 
+const char *tcpModeName(TcpMode mode);
+bool tcpModeFromName(const char *name, TcpMode &mode);
+
 const char *framingName(Framing framing);
 bool framingFromName(const char *name, Framing &framing);
 uint32_t serialConfig(Framing framing);
@@ -93,14 +119,12 @@ uint32_t nextBaud(uint32_t current);
 const char *displayModeName(DisplayMode mode);
 bool displayModeFromName(const char *name, DisplayMode &mode);
 
-LiveView liveView(const DeviceConfig &config);
-void setLiveView(DeviceConfig &config, LiveView view);
-StatusBar statusBar(const DeviceConfig &config);
-void setStatusBar(DeviceConfig &config, StatusBar bar);
-bool screenOff(const DeviceConfig &config);
-void setScreenOff(DeviceConfig &config, bool off);
-bool setupApEnabled(const DeviceConfig &config);
-void setSetupApEnabled(DeviceConfig &config, bool enabled);
-DisplayMode liveDisplayMode(const DeviceConfig &config);
+    LiveView liveView(const DeviceConfig &config);
+    void setLiveView(DeviceConfig &config, LiveView view);
+    StatusBar statusBar(const DeviceConfig &config);
+    void setStatusBar(DeviceConfig &config, StatusBar bar);
+    bool screenOff(const DeviceConfig &config);
+    void setScreenOff(DeviceConfig &config, bool off);
+    DisplayMode liveDisplayMode(const DeviceConfig &config);
 
 }  // namespace configuration

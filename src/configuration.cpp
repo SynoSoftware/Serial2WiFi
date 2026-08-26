@@ -20,9 +20,8 @@ constexpr size_t kSupportedBaudCount = sizeof(kSupportedBauds) / sizeof(kSupport
 constexpr uint8_t kLiveViewMask = 0x01;
 constexpr uint8_t kStatusBarMask = 0x06;
 constexpr uint8_t kScreenOffMask = 0x08;
-constexpr uint8_t kSetupApEnabledMask = 0x10;
-constexpr uint8_t kUiPreferenceMask =
-    kLiveViewMask | kStatusBarMask | kScreenOffMask | kSetupApEnabledMask;
+constexpr uint8_t kLegacySetupApEnabledMask = 0x10;
+constexpr uint8_t kUiPreferenceMask = kLiveViewMask | kStatusBarMask | kScreenOffMask;
 
 size_t boundedLength(const char *value, size_t capacity) {
     return strnlen(value, capacity);
@@ -30,24 +29,27 @@ size_t boundedLength(const char *value, size_t capacity) {
 
 bool readStored(DeviceConfig &config) {
     if (!preferences.begin("s2w", true)) return false;
-    const size_t length = preferences.getBytesLength("cfg");
-    if (length != sizeof(DeviceConfig)) {
-        preferences.end();
-        return false;
-    }
     DeviceConfig stored{};
-    const size_t read = preferences.getBytes("cfg", &stored, sizeof(stored));
+    const size_t length = preferences.getBytesLength("cfg");
+    const size_t read = length == sizeof(stored) ?
+        preferences.getBytes("cfg", &stored, sizeof(stored)) : 0;
     preferences.end();
-    if (read == sizeof(stored) && stored.schema == kLegacySchema) {
-        // Schema 1 had no setup-AP preference. Preserve its user settings and
-        // retain the historical reachable provisioning behavior on upgrade.
-        stored.schema = kSchema;
-        setSetupApEnabled(stored, true);
-    }
-    if (read != sizeof(DeviceConfig) ||
+    // Older firmware persisted the setup-AP override inside uiPreferences.
+    // That control is now gone, so silently drop the legacy bit on load.
+    stored.uiPreferences = static_cast<uint8_t>(
+        stored.uiPreferences & ~kLegacySetupApEnabledMask);
+    if (read != sizeof(stored) || stored.schema != kSchema ||
             validationError(stored) != ValidationError::None) return false;
     config = stored;
     return true;
+}
+
+bool storeFactoryDefaults(const DeviceConfig &config) {
+    if (!preferences.begin("s2w", false)) return false;
+    const bool cleared = preferences.clear();
+    const size_t written = cleared ? preferences.putBytes("cfg", &config, sizeof(config)) : 0;
+    preferences.end();
+    return cleared && written == sizeof(config);
 }
 
 }  // namespace
@@ -59,7 +61,14 @@ DeviceConfig factoryDefaults() {
     config.framing = static_cast<uint8_t>(Framing::EightN1);
     config.display = static_cast<uint8_t>(DisplayMode::Text);
     config.wifiSecurity = static_cast<uint8_t>(WifiSecurity::Unset);
-    config.uiPreferences = kSetupApEnabledMask;
+    config.uiPreferences = 0;
+    config.tcpMode = static_cast<uint8_t>(TcpMode::Listen);
+    config.tcpListenPort = 0;
+    config.tcpRemoteHost[0] = '\0';
+    config.tcpRemotePort = 0;
+    config.longPressMs = kDefaultLongPressMs;
+    config.longPressRepeatMs = kDefaultLongPressRepeatMs;
+    config.screenSaverSeconds = kDefaultScreenSaverSeconds;
     return config;
 }
 
@@ -67,13 +76,7 @@ void begin() {
     configurationMutex = xSemaphoreCreateMutex();
     commitMutex = xSemaphoreCreateMutex();
     currentConfig = factoryDefaults();
-    if (readStored(currentConfig) &&
-            currentConfig.display == static_cast<uint8_t>(DisplayMode::Off)) {
-        // Older browser saves used DisplayMode::Off. Normalize that legacy
-        // representation into the single persisted local screen-off flag.
-        setScreenOff(currentConfig, true);
-        currentConfig.display = static_cast<uint8_t>(liveDisplayMode(currentConfig));
-    }
+    if (!readStored(currentConfig)) storeFactoryDefaults(currentConfig);
 }
 
 DeviceConfig snapshot() {
@@ -183,17 +186,23 @@ void setScreenOff(DeviceConfig &config, bool off) {
     else config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kScreenOffMask);
 }
 
-bool setupApEnabled(const DeviceConfig &config) {
-    return (config.uiPreferences & kSetupApEnabledMask) != 0;
-}
-
-void setSetupApEnabled(DeviceConfig &config, bool enabled) {
-    if (enabled) config.uiPreferences |= kSetupApEnabledMask;
-    else config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kSetupApEnabledMask);
-}
-
 DisplayMode liveDisplayMode(const DeviceConfig &config) {
     return liveView(config) == LiveView::Hex ? DisplayMode::Hex : DisplayMode::Text;
+}
+
+const char *tcpModeName(TcpMode mode) {
+    switch (mode) {
+        case TcpMode::Listen: return "listen";
+        case TcpMode::Connect: return "connect";
+    }
+    return "listen";
+}
+
+bool tcpModeFromName(const char *name, TcpMode &mode) {
+    if (strcmp(name, "listen") == 0) mode = TcpMode::Listen;
+    else if (strcmp(name, "connect") == 0) mode = TcpMode::Connect;
+    else return false;
+    return true;
 }
 
 ValidationError validationError(const DeviceConfig &candidate) {
@@ -204,6 +213,21 @@ ValidationError validationError(const DeviceConfig &candidate) {
     }
     if (candidate.display > static_cast<uint8_t>(DisplayMode::Off)) {
         return ValidationError::Display;
+    }
+    if (candidate.tcpMode > static_cast<uint8_t>(TcpMode::Connect)) {
+        return ValidationError::TcpMode;
+    }
+    if (candidate.longPressMs < kMinimumLongPressMs ||
+            candidate.longPressMs > kMaximumLongPressMs) {
+        return ValidationError::LongPress;
+    }
+    if (candidate.longPressRepeatMs < kMinimumLongPressRepeatMs ||
+            candidate.longPressRepeatMs > kMaximumLongPressRepeatMs) {
+        return ValidationError::LongPressRepeat;
+    }
+    if (candidate.screenSaverSeconds != 0 &&
+            candidate.screenSaverSeconds < kMinimumScreenSaverSeconds) {
+        return ValidationError::ScreenSaver;
     }
     if ((candidate.uiPreferences & ~kUiPreferenceMask) != 0 ||
             static_cast<uint8_t>(statusBar(candidate)) > static_cast<uint8_t>(StatusBar::Network)) {
@@ -219,10 +243,23 @@ ValidationError validationError(const DeviceConfig &candidate) {
             sizeof(candidate.wifiPassword)) {
         return ValidationError::WifiPassword;
     }
-    if (boundedLength(candidate.tcpHost, sizeof(candidate.tcpHost)) >= sizeof(candidate.tcpHost)) {
-        return ValidationError::TcpHost;
+    if (boundedLength(candidate.tcpRemoteHost, sizeof(candidate.tcpRemoteHost)) >=
+            sizeof(candidate.tcpRemoteHost)) {
+        return ValidationError::TcpRemoteHost;
     }
-
+    if (candidate.tcpListenPort == kHttpPort) {
+        return ValidationError::TcpListenPort;
+    }
+    const bool remoteHostConfigured = candidate.tcpRemoteHost[0] != '\0';
+    const bool remotePortConfigured = candidate.tcpRemotePort != 0;
+    if (remoteHostConfigured != remotePortConfigured) {
+        return remoteHostConfigured ?
+            ValidationError::TcpRemotePort : ValidationError::TcpRemoteHost;
+    }
+    if (candidate.tcpMode == static_cast<uint8_t>(TcpMode::Connect) &&
+            !remoteHostConfigured) {
+        return ValidationError::TcpRemoteHost;
+    }
     const bool wifiConfigured = candidate.ssid[0] != '\0';
     if (!wifiConfigured) {
         if (candidate.wifiPassword[0] != '\0') return ValidationError::WifiPassword;
@@ -239,9 +276,6 @@ ValidationError validationError(const DeviceConfig &candidate) {
                 candidate.wifiPassword[0] != '\0') return ValidationError::WifiPassword;
     }
 
-    const bool tcpConfigured = candidate.tcpHost[0] != '\0';
-    if (!tcpConfigured && candidate.tcpPort != 0) return ValidationError::TcpPort;
-    if (tcpConfigured && candidate.tcpPort == 0) return ValidationError::TcpPort;
     return ValidationError::None;
 }
 

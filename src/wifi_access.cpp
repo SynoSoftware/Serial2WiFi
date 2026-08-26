@@ -4,38 +4,104 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <cstring>
+#include <esp_arduino_version.h>
 #include <esp_system.h>
 
 namespace wifi_access {
 namespace {
 
+constexpr uint32_t kApGraceMs = 10 * 60 * 1000;
+constexpr uint32_t kDnsRetryMs = 5000;
 constexpr uint32_t kStaRetryMs = 5000;
+constexpr uint32_t kStaUnavailableMs = 30000;
+constexpr uint8_t kSetupApChannel = 1;
+// Keep these credentials compact. The OLED uses a fixed Version 2-L QR at
+// 2x scale; do not lengthen the SSID, password, or alphabet without first
+// recalculating the WIFI payload capacity and validating the physical layout.
 constexpr char kPasswordAlphabet[] = "abcdefghjkmnpqrtuvwxyz2346789";
 constexpr size_t kSetupPasswordLength = 8;
+constexpr size_t kSetupSsidLength = sizeof("S2W-00") - 1;
+constexpr size_t kWifiQrFixedPayloadLength =
+    sizeof("WIFI:T:WPA;S:") - 1 + sizeof(";P:") - 1 + sizeof(";;") - 1;
+constexpr size_t kQrVersion2LowEccByteCapacity = 32;
+static_assert(
+    kSetupSsidLength + kSetupPasswordLength + kWifiQrFixedPayloadLength <=
+        kQrVersion2LowEccByteCapacity,
+    "Setup Wi-Fi credentials exceed the fixed Version 2-L QR capacity. The QR version and dimensions are immutable: do not enlarge it and do not switch to Version 3. Shorten the generated setup SSID until the payload fits Version 2-L.");
 
 Preferences identityPreferences;
 DNSServer dnsServer;
 char deviceName[33]{};
 char devicePassword[17]{};
 char mdnsName[33]{};
+char mdnsHostName[33]{};
+char stationSsid[33]{};
 
 bool apIsActive = false;
-bool setupApIsEnabled = true;
 bool stationIsConfigured = false;
 bool wasStationConnected = false;
+uint32_t apCloseAt = 0;
+uint32_t dnsRetryAt = 0;
 uint32_t stationRetryAt = 0;
+uint32_t stationUnavailableAt = 0;
 ScanState currentScanState = ScanState::Idle;
 
 bool configuredWifi(const configuration::DeviceConfig &config) {
     return config.ssid[0] != '\0';
 }
 
-void makeDeviceName() {
+uint8_t deriveDeviceSuffix(const char *password) {
     const uint64_t chipId = ESP.getEfuseMac();
-    snprintf(deviceName, sizeof(deviceName), "S2W-%02lX",
-        static_cast<unsigned long>(chipId & 0xFF));
+    // The setup SSID is minted only when a new identity is created. Folding in
+    // the UID and the freshly generated password keeps factory-reset identities
+    // distinct without recomputing the SSID on later boots.
+    uint32_t hash = 2166136261u;
+    auto mixByte = [&hash](uint8_t value) {
+        hash ^= value;
+        hash *= 16777619u;
+    };
+    for (size_t index = 0; index < sizeof(chipId); ++index) {
+        mixByte(static_cast<uint8_t>(chipId >> (index * 8)));
+    }
+    for (size_t index = 0; password[index] != '\0'; ++index) {
+        mixByte(static_cast<uint8_t>(password[index]));
+    }
+    return static_cast<uint8_t>(hash);
+}
+
+void makeDeviceName(const char *password) {
+    const uint64_t chipId = ESP.getEfuseMac();
+    snprintf(deviceName, sizeof(deviceName), "S2W-%02X",
+             static_cast<unsigned>(deriveDeviceSuffix(password)));
     snprintf(mdnsName, sizeof(mdnsName), "serial2wifi-%04lx",
-        static_cast<unsigned long>(chipId & 0xFFFF));
+             static_cast<unsigned long>(chipId & 0xFFFF));
+    snprintf(mdnsHostName, sizeof(mdnsHostName), "%s.local", mdnsName);
+}
+
+bool compactPassword(const String &password) {
+    if (password.length() != kSetupPasswordLength)
+        return false;
+    for (size_t index = 0; index < kSetupPasswordLength; ++index) {
+        if (strchr(kPasswordAlphabet, password[index]) == nullptr)
+            return false;
+    }
+    return true;
+}
+
+bool validSetupName(const String &name) {
+    if (name.length() != kSetupSsidLength)
+        return false;
+    if (strncmp(name.c_str(), "S2W-", 4) != 0)
+        return false;
+    for (size_t index = 4; index < kSetupSsidLength; ++index) {
+        const char value = name[index];
+        const bool decimal = value >= '0' && value <= '9';
+        const bool upperHex = value >= 'A' && value <= 'F';
+        const bool lowerHex = value >= 'a' && value <= 'f';
+        if (!decimal && !upperHex && !lowerHex)
+            return false;
+    }
+    return true;
 }
 
 void generatePassword() {
@@ -45,72 +111,88 @@ void generatePassword() {
     devicePassword[kSetupPasswordLength] = '\0';
 }
 
-bool compactDeviceName(const String &name) {
-    if (name.length() != 6 || !name.startsWith("S2W-")) return false;
-    for (size_t index = 4; index < 6; ++index) {
-        const char value = name[index];
-        const bool hexadecimal =
-            (value >= '0' && value <= '9') || (value >= 'A' && value <= 'F');
-        if (!hexadecimal) return false;
-    }
-    return true;
-}
-
-bool compactPassword(const String &password) {
-    if (password.length() != kSetupPasswordLength) return false;
-    for (size_t index = 0; index < kSetupPasswordLength; ++index) {
-        if (strchr(kPasswordAlphabet, password[index]) == nullptr) return false;
-    }
-    return true;
+void persistIdentity() {
+    identityPreferences.putString("name", deviceName);
+    identityPreferences.putString("pass", devicePassword);
 }
 
 void loadIdentity() {
-    makeDeviceName();
-    generatePassword();
-    if (!identityPreferences.begin("s2id", false)) return;
+    if (!identityPreferences.begin("s2id", false)) {
+        generatePassword();
+        makeDeviceName(devicePassword);
+        return;
+    }
 
     const String storedName = identityPreferences.getString("name", "");
     const String storedPassword = identityPreferences.getString("pass", "");
-    // Legacy credentials are too long for the readable setup page and the
-    // fixed Version 2 QR layout. Compact credentials remain stable; only an
-    // obsolete or invalid value is replaced during boot.
-    if (compactDeviceName(storedName)) {
+    const bool hasName = validSetupName(storedName);
+    const bool hasPassword = compactPassword(storedPassword);
+
+    // `name` and `pass` are a paired identity, not editable configuration.
+    // If either half is missing or invalid, recreate the whole identity once
+    // instead of trying to infer a different SSID from a surviving password.
+    if (hasName && hasPassword) {
         storedName.toCharArray(deviceName, sizeof(deviceName));
-    } else {
-        identityPreferences.putString("name", deviceName);
+        storedPassword.toCharArray(devicePassword, sizeof(devicePassword));
+        identityPreferences.end();
+        return;
     }
 
-    if (compactPassword(storedPassword)) {
-        storedPassword.toCharArray(devicePassword, sizeof(devicePassword));
-    } else {
-        identityPreferences.putString("pass", devicePassword);
-    }
+    generatePassword();
+    makeDeviceName(devicePassword);
+    persistIdentity();
     identityPreferences.end();
 }
 
-void startAp() {
-    if (apIsActive) return;
-    WiFi.mode(WIFI_AP_STA);
-    apIsActive = WiFi.softAP(deviceName, devicePassword);
-    if (apIsActive) {
-        // Captive clients ask DNS for their own probe hostnames. Wildcarding
-        // only the setup interface sends those probes to the local web UI.
-        dnsServer.start(53, "*", WiFi.softAPIP());
+void startCaptiveDns() {
+    if (dnsServer.isUp())
+        return;
+    const uint32_t now = millis();
+    if (static_cast<int32_t>(now - dnsRetryAt) < 0)
+        return;
+    if (!dnsServer.start(53, "*", WiFi.softAPIP())) {
+        dnsRetryAt = now + kDnsRetryMs;
     }
 }
 
+void startAp() {
+    if (apIsActive && WiFi.AP.started())
+        return;
+    apIsActive = false;
+    // Before station credentials exist, setup must be a plain AP. Starting an
+    // unused STA interface in that recovery state gives it no product value
+    // and makes the setup radio depend on concurrent-mode behavior.
+    WiFi.mode(stationIsConfigured ? WIFI_AP_STA : WIFI_AP);
+    if (!WiFi.softAP(deviceName, devicePassword, kSetupApChannel, 0, 4))
+        return;
+    apIsActive = WiFi.AP.started();
+    if (!apIsActive)
+        return;
+
+    // Captive clients ask DNS for their own probe hostnames. Wildcarding only
+    // the setup interface sends those probes to the local web UI.
+    startCaptiveDns();
+}
+
 void stopAp() {
-    if (!apIsActive) return;
+    if (!apIsActive && !WiFi.AP.started())
+        return;
     // Close only the setup interface; the STA/LAN connection must remain up.
     dnsServer.stop();
     WiFi.softAPdisconnect(false);
-    apIsActive = false;
-    if (stationIsConfigured) WiFi.mode(WIFI_STA);
+    apIsActive = WiFi.AP.started();
+    apCloseAt = 0;
+    dnsRetryAt = 0;
+    if (stationIsConfigured && !apIsActive)
+        WiFi.mode(WIFI_STA);
 }
 
 void beginStation(const configuration::DeviceConfig &config) {
     stationIsConfigured = configuredWifi(config);
-    if (!stationIsConfigured) return;
+    strncpy(stationSsid, config.ssid, sizeof(stationSsid) - 1);
+    stationSsid[sizeof(stationSsid) - 1] = '\0';
+    if (!stationIsConfigured)
+        return;
     WiFi.mode(apIsActive ? WIFI_AP_STA : WIFI_STA);
     if (config.wifiSecurity == static_cast<uint8_t>(configuration::WifiSecurity::Open)) {
         WiFi.begin(config.ssid);
@@ -120,17 +202,19 @@ void beginStation(const configuration::DeviceConfig &config) {
     stationRetryAt = millis() + kStaRetryMs;
 }
 
-}  // namespace
+} // namespace
 
 void begin() {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
-    WiFi.mode(WIFI_AP_STA);
     loadIdentity();
 
     const configuration::DeviceConfig config = configuration::snapshot();
-    setupApIsEnabled = configuration::setupApEnabled(config);
-    if (!configuredWifi(config) || setupApIsEnabled) startAp();
+    stationIsConfigured = configuredWifi(config);
+    // A reboot must leave a reachable configuration path before a healthy
+    // station connection has proved itself. Otherwise an unconfigured or
+    // disconnected device could lose its only recovery path.
+    startAp();
     beginStation(config);
 }
 
@@ -139,69 +223,114 @@ void service() {
     const bool connected = stationIsConfigured && WiFi.status() == WL_CONNECTED;
     const uint32_t now = millis();
 
-    if (apIsActive) dnsServer.processNextRequest();
+    // The AP can disappear independently of this state machine. Clear the
+    // cached flag before servicing DNS so the display never advertises a QR
+    // code for an interface that the Wi-Fi driver no longer has running.
+    if (apIsActive && !WiFi.AP.started()) {
+        apIsActive = false;
+        dnsServer.stop();
+        dnsRetryAt = 0;
+    }
 
-    // The persisted setup-AP choice is authoritative. Connectivity changes
-    // must not create a timer-driven AP lifecycle behind the user's back.
+    if (apIsActive) {
+        startCaptiveDns();
+        dnsServer.processNextRequest();
+    }
+
     if (!stationIsConfigured) {
         startAp();
+        apCloseAt = 0;
+        stationUnavailableAt = 0;
         return;
     }
 
-    if (setupApIsEnabled) startAp();
-    else stopAp();
-
     if (connected) {
         if (!wasStationConnected) {
-            if (MDNS.begin(mdnsName)) MDNS.addService("http", "tcp", 80);
+            if (MDNS.begin(mdnsName))
+                MDNS.addService("http", "tcp", 80);
+            stationUnavailableAt = 0;
+            if (!apIsActive)
+                startAp();
+            apCloseAt = now + kApGraceMs;
         }
         wasStationConnected = true;
+        if (apIsActive && apCloseAt != 0 &&
+            static_cast<int32_t>(now - apCloseAt) >= 0) {
+            stopAp();
+        }
         return;
     }
 
     if (wasStationConnected) {
         wasStationConnected = false;
         MDNS.end();
+        stationUnavailableAt = now;
+        apCloseAt = 0;
+    }
+    if (stationUnavailableAt == 0)
+        stationUnavailableAt = now;
+    if (static_cast<int32_t>(now - stationUnavailableAt) >= kStaUnavailableMs) {
+        startAp();
     }
     if (static_cast<int32_t>(now - stationRetryAt) >= 0) {
         beginStation(config);
     }
 }
 
+bool clearIdentity() {
+    if (!identityPreferences.begin("s2id", false))
+        return false;
+    const bool cleared = identityPreferences.clear();
+    identityPreferences.end();
+    return cleared;
+}
+
 void configurationChanged(const configuration::DeviceConfig &next) {
     stationIsConfigured = configuredWifi(next);
-    setupApIsEnabled = configuration::setupApEnabled(next);
-    if (wasStationConnected) MDNS.end();
+    if (wasStationConnected)
+        MDNS.end();
     wasStationConnected = false;
+    apCloseAt = 0;
+    stationUnavailableAt = 0;
     if (!stationIsConfigured) {
+        stationSsid[0] = '\0';
         WiFi.disconnect(false, false);
         startAp();
         return;
     }
-    if (setupApIsEnabled) startAp();
-    else stopAp();
+    startAp();
     beginStation(next);
-}
-
-void setSetupApEnabled(bool enabled) {
-    setupApIsEnabled = enabled;
-    if (!stationIsConfigured || enabled) startAp();
-    else stopAp();
 }
 
 Snapshot snapshot() {
     Snapshot result{};
-    result.apActive = apIsActive;
+    // The OLED's QR must describe the driver-visible AP, never saved intent
+    // or an earlier softAP() call whose interface has since disappeared.
+    result.setupApActive = WiFi.AP.started();
     result.stationConfigured = stationIsConfigured;
     result.stationConnected = stationIsConfigured && WiFi.status() == WL_CONNECTED;
+    result.stationRssi = result.stationConnected ? WiFi.RSSI() : 0;
+    strncpy(result.stationSsid, stationSsid, sizeof(result.stationSsid) - 1);
     strncpy(result.setupSsid, deviceName, sizeof(result.setupSsid) - 1);
     strncpy(result.setupPassword, devicePassword, sizeof(result.setupPassword) - 1);
     result.stationIp = WiFi.localIP();
     return result;
 }
 
+const char *mdnsHost() {
+    return mdnsHostName;
+}
+
 bool requestFromSetupAp(const WiFiClient &client) {
-    return apIsActive && client.localIP() == WiFi.softAPIP();
+    return WiFi.AP.started() && client.localIP() == WiFi.softAPIP();
+}
+
+bool requestFromLocalInterface(const WiFiClient &client) {
+    if (requestFromSetupAp(client))
+        return true;
+    const IPAddress stationIp = WiFi.localIP();
+    return stationIsConfigured && stationIp != IPAddress(0, 0, 0, 0) &&
+           client.localIP() == stationIp;
 }
 
 void startScan() {
@@ -211,7 +340,8 @@ void startScan() {
 }
 
 ScanState scanState() {
-    if (currentScanState != ScanState::Scanning) return currentScanState;
+    if (currentScanState != ScanState::Scanning)
+        return currentScanState;
     const int result = WiFi.scanComplete();
     if (result == WIFI_SCAN_FAILED) {
         currentScanState = ScanState::Failed;
@@ -222,9 +352,11 @@ ScanState scanState() {
 }
 
 size_t copyScanResults(ScanResult *results, size_t capacity) {
-    if (scanState() != ScanState::Ready || results == nullptr) return 0;
+    if (scanState() != ScanState::Ready || results == nullptr)
+        return 0;
     const int count = WiFi.scanComplete();
-    if (count <= 0 || capacity == 0) return 0;
+    if (count <= 0 || capacity == 0)
+        return 0;
 
     size_t copied = 0;
     for (int scanIndex = 0; scanIndex < count; ++scanIndex) {
@@ -241,7 +373,8 @@ size_t copyScanResults(ScanResult *results, size_t capacity) {
         }
 
         for (size_t position = copied - 1; position > 0; --position) {
-            if (results[position].rssi <= results[position - 1].rssi) break;
+            if (results[position].rssi <= results[position - 1].rssi)
+                break;
             const ScanResult temporary = results[position];
             results[position] = results[position - 1];
             results[position - 1] = temporary;
@@ -250,4 +383,4 @@ size_t copyScanResults(ScanResult *results, size_t capacity) {
     return copied;
 }
 
-}  // namespace wifi_access
+} // namespace wifi_access

@@ -14,9 +14,11 @@ enum class ScanState : uint8_t {
 };
 
 struct Snapshot {
-    bool apActive;
+    bool setupApActive;
     bool stationConfigured;
     bool stationConnected;
+    int32_t stationRssi;
+    char stationSsid[33];
     char setupSsid[33];
     char setupPassword[17];
     IPAddress stationIp;
@@ -28,12 +30,14 @@ struct ScanResult {
     bool secured;
 };
 
-void begin();
-void service();
-void configurationChanged(const configuration::DeviceConfig &next);
-void setSetupApEnabled(bool enabled);
-Snapshot snapshot();
-bool requestFromSetupAp(const WiFiClient &client);
+    void begin();
+    void service();
+    bool clearIdentity();
+    void configurationChanged(const configuration::DeviceConfig &next);
+    Snapshot snapshot();
+    const char *mdnsHost();
+    bool requestFromSetupAp(const WiFiClient &client);
+    bool requestFromLocalInterface(const WiFiClient &client);
 
 void startScan();
 ScanState scanState();

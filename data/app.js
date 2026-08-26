@@ -26,7 +26,6 @@
     let statusTimer = null;
     let statusSeen = false;
     let statusLost = false;
-    let intentionalDisconnect = false;
     let selectedView = null;
 
     let wifiMode = 'summary';
@@ -215,8 +214,7 @@
             'longPressMs',
             'longPressRepeatMs',
             'display',
-            'screenSaverSeconds',
-            'setupApEnabled'
+            'screenSaverSeconds'
         ].forEach((field) => setFieldError(field));
     }
 
@@ -562,7 +560,6 @@
             baud: $('baud').value,
             framing: $('framing').value,
             display: $('display').value,
-            setupApEnabled: $('setupApEnabled').checked,
             longPressMs: String(fieldNumber('longPressMs')),
             longPressRepeatMs: String(fieldNumber('longPressRepeatMs')),
             screenSaverSeconds: String(fieldNumber('screenSaverSeconds'))
@@ -576,7 +573,6 @@
             wifiPassword: values.wifiPassword || '',
             tcpListenPort: String(Number(values.tcpListenPort) || 0),
             tcpRemotePort: String(Number(values.tcpRemotePort) || 0),
-            setupApEnabled: Boolean(values.setupApEnabled),
             longPressMs: String(Number(values.longPressMs) || 0),
             longPressRepeatMs: String(Number(values.longPressRepeatMs) || 0),
             screenSaverSeconds: String(Number(values.screenSaverSeconds) || 0)
@@ -909,16 +905,6 @@
         $('tcpConnectFields').hidden = listen;
     }
 
-    function updateConfigurationApHint() {
-        if ($('setupApEnabled').checked) {
-            $('setupApHint').textContent =
-                'Provides local configuration access. Turn it off after commissioning when it is not needed.';
-        } else {
-            $('setupApHint').textContent =
-                'Disabled. Manage this device through its normal network connection.';
-        }
-    }
-
     function updateScreenSaverPresentation() {
         const input = $('screenSaverSeconds');
         const off = input.value.trim() === '' || Number(input.value) === 0;
@@ -937,7 +923,6 @@
             baud: String(config.baud),
             framing: config.framing,
             display: config.display,
-            setupApEnabled: config.setupApEnabled !== false,
             longPressMs: String(config.longPressMs),
             longPressRepeatMs: String(config.longPressRepeatMs),
             screenSaverSeconds: String(Number(config.screenSaverSeconds) || 0)
@@ -953,7 +938,6 @@
         $('baud').value = values.baud;
         $('framing').value = values.framing;
         $('display').value = values.display;
-        $('setupApEnabled').checked = values.setupApEnabled;
         $('longPressMs').value = values.longPressMs;
         $('longPressRepeatMs').value = values.longPressRepeatMs;
         $('screenSaverSeconds').value = Number(values.screenSaverSeconds) ? values.screenSaverSeconds : '';
@@ -968,7 +952,6 @@
         setWifiMode('summary');
         renderWifiSummary();
         renderTcpFields();
-        updateConfigurationApHint();
 
         configurationBaseline = { ...values };
         refreshSaveState();
@@ -1062,21 +1045,6 @@
             valid = false;
         }
 
-        const apWasEnabled = configurationBaseline?.setupApEnabled !== false;
-        const apWillBeEnabled = values.setupApEnabled;
-        const wifiChanged = networkConfigurationChanged(values);
-
-        if (!apWillBeEnabled && !lastStatus?.wifiConnected) {
-            setFieldError('setupApEnabled', 'Connect normal Wi-Fi before disabling the Configuration AP.');
-            valid = false;
-        } else if (apWasEnabled && !apWillBeEnabled && wifiChanged) {
-            setFieldError('setupApEnabled', 'Save the Wi-Fi change first, verify it connects, then disable the Configuration AP.');
-            valid = false;
-        } else if (!apWasEnabled && !apWillBeEnabled && wifiChanged) {
-            setFieldError('setupApEnabled', 'Enable the Configuration AP before changing Wi-Fi settings.');
-            valid = false;
-        }
-
         if (!valid) {
             const firstInvalid = document.querySelector('[aria-invalid="true"]');
             if (firstInvalid?.id) focusField(firstInvalid.id);
@@ -1108,9 +1076,6 @@
     }
 
     function backendErrorMessage(result, response) {
-        if (result.error === 'recovery_unavailable') {
-            return 'The Configuration AP cannot be disabled in the current recovery state.';
-        }
         if (result.error === 'invalid_timeout') {
             return 'Enter a value within the allowed range.';
         }
@@ -1189,7 +1154,6 @@
             baud: values.baud,
             framing: values.framing,
             display: values.display,
-            setupApEnabled: String(values.setupApEnabled),
             longPressMs: values.longPressMs,
             longPressRepeatMs: values.longPressRepeatMs,
             screenSaverSeconds: values.screenSaverSeconds
@@ -1227,26 +1191,9 @@
                 throw new Error(backendErrorMessage(result, response));
             }
 
-            const disablingCurrentAp =
-                auth.terminalAvailable &&
-                configurationBaseline?.setupApEnabled !== false &&
-                !values.setupApEnabled;
-
             adoptPersistedConfiguration(values);
             showSaveFeedback('Changes saved.', 'success', 'circle-check');
             announce('Changes saved.');
-
-            if (disablingCurrentAp) {
-                intentionalDisconnect = true;
-                stopStatusPolling();
-                stopTerminal();
-                showSaveFeedback(
-                    'Changes saved. Configuration AP disabled; continue through the normal network.',
-                    'success',
-                    'circle-check'
-                );
-                return;
-            }
 
             window.setTimeout(refreshStatusNow, 250);
         } catch (error) {
@@ -1499,7 +1446,6 @@
     }
 
     function markStatusLost() {
-        if (intentionalDisconnect) return;
         statusLost = true;
         $('globalNotice').hidden = false;
         $('globalNoticeText').textContent = 'Device connection lost. Retrying…';
@@ -1528,7 +1474,6 @@
     }
 
     async function refreshStatusNow() {
-        if (intentionalDisconnect) return;
         try {
             await fetchStatus();
         } catch {
@@ -1545,15 +1490,12 @@
 
     async function pollStatus() {
         stopStatusPolling();
-        if (intentionalDisconnect) return;
         try {
             await fetchStatus();
         } catch {
             if (statusSeen) markStatusLost();
         } finally {
-            if (!intentionalDisconnect) {
-                statusTimer = window.setTimeout(pollStatus, statusLost ? 1500 : statusPollMs);
-            }
+            statusTimer = window.setTimeout(pollStatus, statusLost ? 1500 : statusPollMs);
         }
     }
 
@@ -1792,7 +1734,7 @@
     }
 
     function scheduleTerminalReconnect() {
-        if (!terminalWanted || terminalClosing || terminalReconnectTimer !== null || intentionalDisconnect) return;
+        if (!terminalWanted || terminalClosing || terminalReconnectTimer !== null) return;
         terminalReconnectTimer = window.setTimeout(() => {
             terminalReconnectTimer = null;
             connectTerminal();
@@ -1805,7 +1747,6 @@
             !terminalWanted ||
             !auth.authenticated ||
             !auth.terminalAvailable ||
-            intentionalDisconnect ||
             terminalSocket?.readyState === WebSocket.OPEN ||
             terminalSocket?.readyState === WebSocket.CONNECTING
         ) {
@@ -1931,13 +1872,6 @@
                 }
                 refreshSaveState();
             });
-        });
-
-        $('setupApEnabled').addEventListener('change', () => {
-            setFieldError('setupApEnabled');
-            clearSaveFeedback();
-            updateConfigurationApHint();
-            refreshSaveState();
         });
     }
 

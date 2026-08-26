@@ -14,19 +14,19 @@ Serial2WiFi is a configurable, transparent, full-duplex serial↔TCP gateway ove
 
 SER→NET:
 
-Windows COM → CP2102 → UART RX → ESP32 → TCP server
+Windows COM → CP2102 → UART RX → ESP32 → TCP connection
 
 
 
 NET→SER:
 
-TCP server → ESP32 → UART TX → CP2102 → Windows COM
+TCP connection → ESP32 → UART TX → CP2102 → Windows COM
 
 ```
 
 
 
-The ESP32 is always the outbound TCP client. It forwards bytes exactly as received and does not parse the machine protocol, generate ACK/NAK responses, frame messages, or translate line endings.
+The ESP32 supports two mutually exclusive TCP modes. In server mode, TCP clients connect to the device. In client mode, the device connects to a configured remote TCP server, which supports deployments where the device is behind NAT. It forwards bytes exactly as received and does not parse the machine protocol, generate ACK/NAK responses, frame messages, or translate line endings.
 
 
 
@@ -38,7 +38,7 @@ The product principle is:
 
 
 
-No Wi-Fi, phone, browser, or TCP server is required for local proof-of-capture. If the current baud is wrong, PRG short-taps allow immediate baud discovery at the machine.
+No Wi-Fi, phone, browser, or TCP client is required for local proof-of-capture. If the current baud is wrong, PRG short-taps allow immediate baud discovery at the machine.
 
 
 
@@ -152,8 +152,8 @@ Wi-Fi SSID    empty
 
 Wi-Fi pass    empty
 
+TCP mode      server
 TCP host      empty
-
 TCP port      0
 
 ```
@@ -234,7 +234,7 @@ Any other baud or framing value fails validation.
 
 \- The HardwareSerial receive callback continuously drains UART RX into the SER→NET queue and offers tagged bytes to display history. It performs no Wi-Fi, TCP, HTTP, I²C, OLED, or NVS work.
 
-\- `networkTask` exclusively owns the TCP client and services SER→NET and NET→SER in bounded alternating chunks.
+\- `networkTask` exclusively owns the TCP listener or outbound client socket and services SER→NET and NET→SER in bounded alternating chunks.
 
 \- `serialTxTask` exclusively drains NET→SER into `Serial.write()`.
 
@@ -242,7 +242,7 @@ Any other baud or framing value fails validation.
 
 
 
-This isolation is a correctness requirement at every supported baud, not a special architecture for 230400. UART RX must continue draining while Wi-Fi scans, TCP reconnects, HTTP requests execute, and the OLED refreshes.
+This isolation is a correctness requirement at every supported baud, not a special architecture for 230400. UART RX must continue draining while Wi-Fi scans, TCP transitions, HTTP requests execute, and the OLED refreshes.
 
 
 
@@ -332,11 +332,17 @@ It has two producers—UART RX and `networkTask`—and one renderer. The rendere
 
 
 
-After every TCP connection, enable `TCP\_NODELAY`.
+After every accepted TCP connection, enable `TCP\_NODELAY`.
 
 
 
 `networkTask` must:
+
+
+
+\- in server mode, listen locally on the configured TCP port and accept one inbound TCP client;
+
+\- in client mode, resolve the configured TCP host and connect to the configured remote TCP server;
 
 
 
@@ -354,15 +360,10 @@ After every TCP connection, enable `TCP\_NODELAY`.
 
 
 
-Reconnect delays are:
-
-
-
-```text
-
-1 s → 2 s → 5 s → 10 s → 10 s thereafter
-
-```
+In server mode, a disconnected client returns the device to `listening` and it
+waits for the next inbound client. In client mode, a disconnected connection
+returns to `connecting` and retries with bounded backoff. Neither mode changes
+the UART byte stream or generates protocol traffic.
 
 
 
@@ -728,7 +729,9 @@ Clear:
 
 Wi-Fi SSID/password/security
 
-TCP host/port
+TCP mode and remote host when client mode is selected
+
+TCP port (listen port in server mode)
 
 baud/framing
 
@@ -771,8 +774,6 @@ unique setup-AP password
 firmware and bootloader
 
 partition table
-
-LittleFS
 
 CP2102/programming support
 
@@ -864,7 +865,7 @@ commitConfiguration(candidate)
 
 
 
-`commitConfiguration()` must never wait for Wi-Fi association or TCP connection while holding its lock. It initiates those asynchronous state-machine transitions and returns their initial state.
+`commitConfiguration()` must never wait for Wi-Fi association or a TCP connection while holding its lock. It initiates the asynchronous Wi-Fi/TCP state transition and returns its initial state.
 
 
 
@@ -888,7 +889,7 @@ Internal runtime operations are:
 
 reconfigureSerial(...)
 
-reconfigureServer(...)
+reconfigureTcp(...)
 
 reconfigureWifi(...)
 
@@ -938,7 +939,8 @@ If persistence fails:
 
 
 
-After persistence succeeds, the saved candidate is authoritative. Failure to connect to its Wi-Fi or TCP server does not roll configuration back.
+After persistence succeeds, the saved candidate is authoritative. Failure to connect
+to its Wi-Fi or TCP peer does not roll configuration back.
 
 
 
@@ -956,8 +958,8 @@ SSID           empty
 
 Wi-Fi password empty
 
+TCP mode       server
 TCP host       empty
-
 TCP port       0
 
 ```
@@ -988,17 +990,17 @@ Wi-Fi configured:
 
 
 
-TCP endpoint unconfigured:
+TCP server mode:
 
 &#x20;   host must be empty
 
-&#x20;   port must be 0
+&#x20;   port may be 0 or 1..65535
 
 
 
-TCP endpoint configured:
+TCP client mode:
 
-&#x20;   host must be non-empty
+&#x20;   host must be non-empty and at most 253 bytes
 
 &#x20;   port must be 1..65535
 
@@ -1006,7 +1008,9 @@ TCP endpoint configured:
 
 
 
-Wi-Fi and TCP configuration are independent. A TCP endpoint may be saved before Wi-Fi is configured, and Wi-Fi may be configured before a TCP endpoint is supplied.
+Wi-Fi and TCP configuration are independent. Either TCP mode may be saved
+before Wi-Fi is configured, and Wi-Fi may be configured before the TCP mode
+and endpoint are supplied.
 
 
 
@@ -1024,7 +1028,7 @@ For a Save changing several fields, calculate all differences first and execute 
 
 ```text
 
-Same-server TCP reconnect:
+Existing TCP connection after an unchanged TCP configuration:
 
 &#x20;   retain SER→NET queue
 
@@ -1038,17 +1042,17 @@ Wi-Fi-only change:
 
 &#x20;   reconnect STA
 
-&#x20;   reconnect the same TCP endpoint
+&#x20;   resume the configured TCP mode
 
 
 
-Server host/port change:
+TCP mode, host, or port change:
 
 &#x20;   close old TCP connection
 
 &#x20;   count and clear both transport queues
 
-&#x20;   connect to the new endpoint
+&#x20;   restart the configured listener or outbound connection
 
 &#x20;   retain OLED history
 
@@ -1062,11 +1066,11 @@ Baud or framing change:
 
 &#x20;   clear OLED history decoded using old settings
 
-&#x20;   close TCP connection
+&#x20;   close the active TCP client
 
 &#x20;   restart UART
 
-&#x20;   reconnect TCP
+&#x20;   resume the configured TCP mode
 
 
 
@@ -1078,11 +1082,11 @@ Display-only change:
 
 
 
-When serial, server, and Wi-Fi settings change together, perform the serial transport boundary once, then apply the new Wi-Fi and final server endpoint without duplicate queue clears or socket teardown.
+When serial, TCP, and Wi-Fi settings change together, perform the serial transport boundary once, then apply the new Wi-Fi and final TCP configuration without duplicate queue clears or socket teardown.
 
 
 
-A failed UART restart is a device fault: show `SERIAL ERROR`, stop forwarding through the invalid UART state, retain the saved desired configuration, and retry it on reboot. Wi-Fi and TCP connection failures remain visible retrying states.
+A failed UART restart is a device fault: show `SERIAL ERROR`, stop forwarding through the invalid UART state, retain the saved desired configuration, and retry it on reboot. Wi-Fi failures remain visible; the TCP state reports whether the device is disabled, waiting for Wi-Fi, listening, connecting, or connected.
 
 
 
@@ -1196,7 +1200,7 @@ mDNS       http://serial2wifi-xxxx.local
 
 
 
-Automatic captive-page opening is best effort. `http://192.168.4.1` is the guaranteed setup path.
+The OLED QR uses the standard Wi-Fi credential format: scanning it joins the setup AP but does not itself encode or launch a browser URL. After joining, the phone may open the setup page from its captive-network probe. `http://192.168.4.1` is the guaranteed setup path.
 
 
 
@@ -1212,17 +1216,19 @@ Determine request authority from the accepted socket’s local interface/address
 
 
 
+The setup AP canonical origin is `http://<softAPIP>/`. Captive hostnames may redirect only to that origin. The UI and non-secret status endpoint accept only the setup-AP IP, connected station IP, or the device mDNS hostname. Authenticated local sessions may read and write configuration; Wi-Fi scans and the WebSocket terminal remain setup-AP only.
+
+
+
 ```text
 
 Setup-AP interface:
 
-&#x20;   configuration page
+&#x20;   bootstrap administrator password creation
 
 &#x20;   Wi-Fi scan
 
-&#x20;   GET configuration
-
-&#x20;   POST configuration
+&#x20;   configuration
 
 &#x20;   status
 
@@ -1230,17 +1236,24 @@ Setup-AP interface:
 
 STA/LAN interface:
 
-&#x20;   status only
+&#x20;   status
+
+&#x20;   authenticated configuration
 
 ```
 
 
 
-Configuration or scan mutations received through STA/LAN return `403`.
+Unauthenticated scan mutations received through STA/LAN return `403`.
+
+Configuration mutations require an authenticated local session and may come
+from either interface.
 
 
 
-Generate a new CSRF token on every boot. Expose it only through the AP-side configuration response and require it in `X-CSRF-Token` for AP-side POST requests.
+Generate a new CSRF token on every boot. Expose it through the local
+management responses and require it in `X-CSRF-Token` for configuration POST
+requests.
 
 
 
@@ -1259,12 +1272,13 @@ Available through AP and LAN:
 ```text
 
 GET  /api/status
+GET  /api/auth
 
 ```
 
 
 
-AP only:
+Authenticated local management:
 
 
 
@@ -1274,9 +1288,21 @@ GET  /api/config
 
 POST /api/config
 
+POST /api/auth/password
+
+```
+
+
+
+AP only:
+
+```text
+
 POST /api/wifi/scan
 
 GET  /api/wifi/scan
+
+GET  /terminal
 
 ```
 
@@ -1298,7 +1324,7 @@ GET  /api/wifi/scan
 
 
 
-It may include Wi-Fi/TCP state, IP address, baud/framing, display mode, directional counters, queue sizes, drops, UART errors, and retry state.
+It includes Wi-Fi/TCP state, IP address, baud/framing, directional counters, queue sizes, drops, UART errors, retry state, and whether the current local session may manage configuration.
 
 
 
@@ -1306,7 +1332,7 @@ It may include Wi-Fi/TCP state, IP address, baud/framing, display mode, directio
 
 
 
-`POST /api/config` validates the complete candidate and returns field-specific `400` errors.
+`POST /api/config` is a complete-form replacement. It requires every editable field, including fields whose value may be empty, validates the complete candidate, and returns field-specific `400` errors for incomplete or invalid input.
 
 
 
@@ -1322,9 +1348,13 @@ Wi-Fi pass    empty or maximum 64 bytes
 
 security      unset | open | secured
 
-host          empty or maximum 253 bytes
+TCP mode      server | client
 
-port          0 when host empty; otherwise 1..65535
+TCP host      empty in server mode; non-empty, at most 253 bytes in client mode
+
+TCP port      server mode: 0 disables or 1..65535 except 80; client mode: 1..65535
+
+               port 80 is reserved for the setup HTTP server
 
 baud          supported enum
 
@@ -1394,13 +1424,15 @@ Setup AP:
 
 Normal LAN:
 
-&#x20;   status-only presentation
+&#x20;   status-only presentation until authenticated
 
 ```
 
 
 
-Do not render disabled editable controls on LAN. Select the presentation from `configurationAllowed`.
+Do not render editable controls unless `configurationAllowed` is true. Use
+`configurationAllowed` to decide whether the current local session gets the
+management presentation or the status-only presentation.
 
 
 
@@ -1416,7 +1448,9 @@ The editable page includes:
 
 Wi-Fi scan/network/password/security
 
-TCP host/port
+TCP mode and remote server host
+
+TCP port (listen port in server mode)
 
 baud
 
@@ -1508,7 +1542,7 @@ Wi-Fi connected
 
 &#x20;   ↓
 
-Connecting to server…
+Starting TCP listener or connecting to remote server…
 
 &#x20;   ↓
 
@@ -1702,7 +1736,7 @@ Acceptance:
 
 9\. obtain readable output at the correct baud;
 
-10\. preserve the selected baud across power cycle despite empty SSID, host, and port zero.
+10\. preserve the selected baud across power cycle despite empty SSID and listen port zero.
 
 
 
@@ -1724,7 +1758,7 @@ UART RX
 
 → SER→NET queue
 
-→ TCP echo server
+→ TCP connection in the configured server or client mode
 
 → NET→SER queue
 
@@ -1739,6 +1773,10 @@ Extend the same configuration boundary with queue and TCP coordination.
 
 
 Verify:
+
+\- server mode accepts an inbound TCP client;
+
+\- client mode resolves and connects to the configured remote TCP server;
 
 
 
@@ -1844,7 +1882,7 @@ Exercise:
 
 \- AP loss/recovery lifecycle;
 
-\- LAN read-only enforcement;
+\- authenticated LAN management;
 
 \- factory-reset success and failure;
 
@@ -1866,7 +1904,7 @@ Exercise:
 
 Given a factory-reset Serial2WiFi
 
-And no Wi-Fi or TCP server has been configured
+And no Wi-Fi or TCP endpoint has been configured
 
 When it is connected to a serial source and bytes are transmitted
 
@@ -1924,7 +1962,7 @@ without entering the web UI.
 
 Given factory configuration with empty SSID/password,
 
-empty TCP host, and TCP port zero
+TCP server mode with TCP port zero
 
 When PRG changes only the baud
 
@@ -1936,7 +1974,9 @@ and the new baud is persisted without inventing network values.
 
 
 
-Also verify that host-empty/port-nonzero and host-nonempty/port-zero candidates are rejected.
+Also verify that server mode with port zero disables the TCP listener, every
+non-zero server port enables a local listener, and client mode resolves and
+connects to its configured remote host without requiring a local listener.
 
 
 
@@ -2020,7 +2060,7 @@ Verify that:
 
 \- a combined Save performs one coordinated transport boundary;
 
-\- Wi-Fi or TCP connection failure does not roll back saved settings;
+\- Wi-Fi failure or absence of a TCP peer does not roll back saved settings;
 
 \- the AP remains reachable and connection state explains the failure.
 

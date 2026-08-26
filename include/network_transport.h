@@ -7,13 +7,15 @@ namespace network_transport {
 enum class ConnectionState : uint8_t {
     Disabled = 0,
     WaitingForWifi,
+    Listening,
     Connecting,
+    Retrying,
     Connected,
+    Failure,
 };
 
 struct Snapshot {
     ConnectionState state;
-    bool tcpRetrying;
     bool taskStartError;
     uint64_t serialToNetworkReceived;
     uint64_t serialToNetworkForwarded;

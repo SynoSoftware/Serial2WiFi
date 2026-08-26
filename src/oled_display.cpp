@@ -17,12 +17,17 @@ constexpr uint8_t kResetPin = 16;
 constexpr uint8_t kAddress = 0x3C;
 constexpr uint32_t kRefreshMs = 100;
 constexpr uint32_t kRateSampleMs = 3000;
-constexpr uint32_t kMenuInactivityMs = 10000;
+constexpr uint32_t kBootBrandingMs = 1000;
+constexpr uint32_t kPageTitleMs = 1000;
 constexpr size_t kPayloadRows = 7;
 constexpr uint8_t kCompactFont = 1;
 constexpr uint8_t kLargeFont = 2;
+constexpr int16_t kSetupQrModuleCount = 25;
 constexpr uint8_t kSetupQrModulePixels = 2;
-constexpr int16_t kSetupQrLeftPixels = (128 - 50) / 2;
+constexpr int16_t kSetupQrSizePixels = kSetupQrModuleCount * kSetupQrModulePixels;
+constexpr int16_t kSetupQrLeftPixels = 0;
+constexpr int16_t kSetupQrTextLeftPixels = kSetupQrSizePixels + 4;
+constexpr int16_t kSetupQrTextWidth = 128 - kSetupQrTextLeftPixels;
 
 // Dense screens must retain every required value. Short action and fault
 // feedback can use the larger font without sacrificing operational data.
@@ -36,32 +41,400 @@ uint64_t lastSerialReceived = 0;
 uint64_t lastNetworkReceived = 0;
 uint32_t serialRate = 0;
 uint32_t networkRate = 0;
-bool menuIsOpen = false;
-uint8_t menuRow = 0;
-uint32_t lastMenuInteraction = 0;
+char firmwareBuildNumber[14]{};
 
-enum class MenuRow : uint8_t {
-    LiveView = 0,
-    StatusBar,
-    Screen,
-};
-
-enum class SetupPage : uint8_t {
-    Baud,
-    Details,
+enum class Page : uint8_t {
+    Brand = 0,
     Qr,
-    Brand,
+    Credentials,
+    LiveText,
+    LiveHex,
+    Statistics,
+    Serial,
+    Count,
 };
 
-SetupPage setupPage = SetupPage::Baud;
+using PageRenderer = void (*)(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+
+struct PageDescription {
+    PageAction action;
+    const char *introduction;
+    PageRenderer show;
+    bool setupOnly;
+};
+
+Page currentPage = Page::Brand;
+bool pageInitialized = false;
+bool displayWokenFromOff = false;
+bool screenSaverActive = false;
+bool renderRequested = true;
+uint32_t bootBrandingStartedAt = 0;
+uint32_t lastUserInteraction = 0;
+bool pageTitleVisible = false;
+uint32_t pageTitleStartedAt = 0;
+bool serialTrafficRedirected = false;
 
 struct TextLine {
     char value[22];
     uint8_t length;
 };
 
+struct PageObservation {
+    bool unconfigured;
+    bool setupApAvailable;
+    bool screenOff;
+    uint8_t displayPreference;
+};
+
+PageObservation previousObservation{};
+
 void formatRate(char *destination, size_t capacity, uint32_t value);
 void formatBytes(char *destination, size_t capacity, uint64_t value);
+void drawCenteredText(
+    const char *text,
+    uint8_t textSize,
+    int16_t regionLeft,
+    int16_t regionWidth,
+    int16_t centerY);
+uint8_t largestReadableFont(const char *text, int16_t regionWidth);
+void formatBuildNumber(char *destination, size_t capacity);
+void renderLiveText(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderLiveHex(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderStats(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderSetupCredentials(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderWifiState(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderSetupQr(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderSerialPage(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void renderBrandPage(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool serialTrafficSeen);
+void prepareNextBaud(configuration::DeviceConfig &candidate);
+
+// The enum order and this table are the one carousel definition. Keeping the
+// renderer, setup-only rule, and optional page title together prevents page
+// behavior from being duplicated across navigation and rendering code.
+constexpr PageDescription kPageDescriptions[] = {
+    {nullptr, nullptr, renderBrandPage, false},
+    {nullptr, nullptr, renderWifiState, false},
+    {nullptr, nullptr, renderSetupCredentials, false},
+    {nullptr, "LIVE TEXT", renderLiveText, false},
+    {nullptr, "LIVE HEX", renderLiveHex, false},
+    {nullptr, "STATISTICS", renderStats, false},
+    {prepareNextBaud, nullptr, renderSerialPage, false},
+};
+constexpr size_t kPageCount = static_cast<size_t>(Page::Count);
+static_assert(
+    sizeof(kPageDescriptions) / sizeof(kPageDescriptions[0]) == kPageCount,
+    "page descriptions must match Page");
+
+const PageDescription &pageDescription(Page page) {
+    return kPageDescriptions[static_cast<size_t>(page)];
+}
+
+bool setupOnlyPage(Page page) {
+    return pageDescription(page).setupOnly;
+}
+
+Page preferredRuntimePage(const configuration::DeviceConfig &config) {
+    switch (static_cast<configuration::DisplayMode>(config.display)) {
+        case configuration::DisplayMode::Hex:
+            return Page::LiveHex;
+        case configuration::DisplayMode::Stats:
+            return Page::Statistics;
+        case configuration::DisplayMode::Text:
+        case configuration::DisplayMode::Off:
+            return Page::LiveText;
+    }
+    return Page::LiveText;
+}
+
+void prepareNextBaud(configuration::DeviceConfig &candidate) {
+    candidate.baud = configuration::nextBaud(candidate.baud);
+}
+
+void requestRender() {
+    renderRequested = true;
+}
+
+void selectPage(Page page, bool showTitle) {
+    currentPage = page;
+    pageTitleVisible = showTitle && pageDescription(page).introduction != nullptr;
+    pageTitleStartedAt = pageTitleVisible ? millis() : 0;
+    requestRender();
+}
+
+void showCurrentPageTitle() {
+    selectPage(currentPage, true);
+}
+
+void initializePage(
+    const configuration::DeviceConfig &config,
+    bool setupApAvailable,
+    bool serialTrafficSeen) {
+    currentPage = preferredRuntimePage(config);
+    pageInitialized = true;
+    previousObservation = {
+        config.ssid[0] == '\0',
+        setupApAvailable,
+        configuration::screenOff(config),
+        config.display,
+    };
+    serialTrafficRedirected = serialTrafficSeen;
+}
+
+void normalizePage(
+    const configuration::DeviceConfig &config,
+    bool setupApAvailable,
+    bool serialTrafficSeen) {
+    const PageObservation observation = {
+        config.ssid[0] == '\0',
+        setupApAvailable,
+        configuration::screenOff(config),
+        config.display,
+    };
+    const bool becameConfigured =
+        previousObservation.unconfigured && !observation.unconfigured;
+    const bool becameUnconfigured =
+        !previousObservation.unconfigured && observation.unconfigured;
+    const bool setupApAppeared =
+        !previousObservation.setupApAvailable && observation.setupApAvailable;
+    const bool setupApDisappeared =
+        previousObservation.setupApAvailable && !observation.setupApAvailable;
+    const bool displayPreferenceChanged =
+        previousObservation.displayPreference != observation.displayPreference;
+    const bool screenOffChanged =
+        previousObservation.screenOff != observation.screenOff;
+
+    if (becameConfigured && setupOnlyPage(currentPage)) {
+        selectPage(preferredRuntimePage(config), false);
+    } else if (becameUnconfigured && observation.setupApAvailable) {
+        selectPage(
+            serialTrafficSeen ? preferredRuntimePage(config) : Page::Qr,
+            false);
+        serialTrafficRedirected = serialTrafficSeen;
+    } else if (setupApAppeared && observation.unconfigured &&
+            !serialTrafficSeen) {
+        selectPage(Page::Qr, false);
+    } else if (setupApDisappeared && setupOnlyPage(currentPage)) {
+        selectPage(preferredRuntimePage(config), false);
+    } else if (!serialTrafficRedirected && observation.unconfigured &&
+            serialTrafficSeen) {
+        serialTrafficRedirected = true;
+        if (setupApAvailable && setupOnlyPage(currentPage)) {
+            selectPage(preferredRuntimePage(config), false);
+        }
+    }
+    if (displayPreferenceChanged) {
+        if (!setupOnlyPage(currentPage)) {
+            selectPage(preferredRuntimePage(config), false);
+        }
+        // Setup pages remain a deliberate transient navigation choice; the
+        // preference is recorded below without rewriting the next page click.
+    }
+    if (screenOffChanged) {
+        displayWokenFromOff = false;
+        requestRender();
+    }
+    previousObservation = observation;
+}
+
+void advancePage(bool setupApAvailable) {
+    size_t next = (static_cast<size_t>(currentPage) + 1) % kPageCount;
+    while (kPageDescriptions[next].setupOnly && !setupApAvailable) {
+        next = (next + 1) % kPageCount;
+    }
+    selectPage(static_cast<Page>(next), true);
+}
+
+enum class WifiIcon : uint8_t { Wifi, High, Low, Zero, Off };
+
+// These 1-bit crops are rendered offline from the supplied Lucide SVG paths
+// at the OLED's 64px height. The device draws fixed flash data; it never
+// parses SVG or uses a vector renderer at runtime.
+const uint8_t kWifiOuterBitmap[] PROGMEM = {
+    0x00, 0x00, 0x00, 0x7F, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F, 0xFF, 0xFF, 0x80, 0x00, 0x00,
+    0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xF0, 0x00, 0x00, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x00,
+    0x00, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xE0, 0x00,
+    0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF8, 0x00, 0x03, 0xFF, 0xFC, 0x00, 0x03, 0xFF, 0xFC, 0x00,
+    0x0F, 0xFF, 0xC0, 0x00, 0x00, 0x3F, 0xFF, 0x00, 0x1F, 0xFF, 0x00, 0x00, 0x00, 0x0F, 0xFF, 0x80,
+    0x3F, 0xFC, 0x00, 0x00, 0x00, 0x03, 0xFF, 0xC0, 0x7F, 0xF0, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xE0,
+    0xFF, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x3F, 0xF0, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x00, 0x1F, 0xF0,
+    0xFE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0xF0, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE0,
+    0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xC0,
+};
+const uint8_t kWifiMiddleBitmap[] PROGMEM = {
+    0x00, 0x03, 0xFF, 0xFC, 0x00, 0x00, 0x00, 0x1F, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x7F, 0xFF, 0xFF,
+    0xE0, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xF8, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x0F, 0xFF,
+    0xFF, 0xFF, 0xFF, 0x00, 0x1F, 0xFF, 0x80, 0x1F, 0xFF, 0x80, 0x7F, 0xFC, 0x00, 0x03, 0xFF, 0xE0,
+    0x7F, 0xE0, 0x00, 0x00, 0x7F, 0xE0, 0xFF, 0xC0, 0x00, 0x00, 0x3F, 0xF0, 0xFF, 0x00, 0x00, 0x00,
+    0x0F, 0xF0, 0xFE, 0x00, 0x00, 0x00, 0x07, 0xF0, 0x7C, 0x00, 0x00, 0x00, 0x03, 0xE0,
+};
+const uint8_t kWifiInnerBitmap[] PROGMEM = {
+    0x01, 0xFF, 0x80, 0x07, 0xFF, 0xE0, 0x1F, 0xFF, 0xF8, 0x3F, 0xFF, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xC3, 0xFF, 0xFE, 0x00, 0x7F, 0xFC, 0x00, 0x3F, 0x78, 0x00, 0x1E,
+};
+const uint8_t kWifiDotBitmap[] PROGMEM = {0x78, 0xFC, 0xFC, 0xFC, 0xFC, 0x7C};
+const uint8_t kWifiOffBitmap[] PROGMEM = {
+    0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0xFE,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0xFF,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x3F,0xE0,0x00,0x00,0x00,0x00,0x00,0x00,0x1F,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x0F,0xF8,0x00,0x7F,0xF0,0x00,0x00,0x00,0x07,0xFC,0x00,0xFF,0xFF,0x80,0x00,0x00,
+    0x03,0xFE,0x01,0xFF,0xFF,0xF0,0x00,0x00,0x01,0xFF,0x01,0xFF,0xFF,0xFE,0x00,0x00,
+    0x00,0xFF,0x81,0xFF,0xFF,0xFF,0x80,0x00,0x00,0x7F,0xC0,0xFF,0xFF,0xFF,0xE0,0x00,
+    0x01,0xFF,0xE0,0x7D,0xFF,0xFF,0xF8,0x00,0x03,0xFF,0xF0,0x00,0x03,0xFF,0xFC,0x00,
+    0x0F,0xFF,0xF8,0x00,0x00,0x3F,0xFF,0x00,0x1F,0xFF,0xFC,0x00,0x00,0x0F,0xFF,0x80,
+    0x3F,0xFF,0xFE,0x00,0x00,0x03,0xFF,0xC0,0x7F,0xF1,0xFF,0x00,0x00,0x00,0xFF,0xE0,
+    0xFF,0xC0,0xFF,0x80,0x00,0x00,0x3F,0xF0,0xFF,0x80,0x7F,0xC0,0x00,0x00,0x1F,0xF0,
+    0xFE,0x00,0x3F,0xE0,0x00,0x00,0x07,0xF0,0x7C,0x00,0x1F,0xF0,0x00,0x00,0x03,0xE0,
+    0x38,0x00,0x7F,0xF8,0x00,0x00,0x01,0xC0,0x00,0x01,0xFF,0xFC,0x00,0x78,0x00,0x00,
+    0x00,0x07,0xFF,0xFE,0x00,0x7E,0x00,0x00,0x00,0x0F,0xFF,0xFF,0x00,0xFF,0x00,0x00,
+    0x00,0x1F,0xFF,0xFF,0x80,0xFF,0x80,0x00,0x00,0x3F,0xFC,0x7F,0xC0,0xFF,0xE0,0x00,
+    0x00,0x7F,0xE0,0x3F,0xE0,0x7F,0xE0,0x00,0x00,0xFF,0xC0,0x1F,0xF0,0x3F,0xF0,0x00,
+    0x00,0xFF,0x00,0x0F,0xF8,0x0F,0xF0,0x00,0x00,0xFE,0x00,0x07,0xFC,0x07,0xF0,0x00,
+    0x00,0x7C,0x00,0x03,0xFE,0x03,0xE0,0x00,0x00,0x00,0x00,0x7F,0xFF,0x00,0x00,0x00,
+    0x00,0x00,0x01,0xFF,0xFF,0x80,0x00,0x00,0x00,0x00,0x07,0xFF,0xFF,0xC0,0x00,0x00,
+    0x00,0x00,0x0F,0xFF,0xFF,0xE0,0x00,0x00,0x00,0x00,0x3F,0xFF,0xFF,0xF0,0x00,0x00,
+    0x00,0x00,0x3F,0xFF,0xFF,0xF8,0x00,0x00,0x00,0x00,0x3F,0xF0,0xFF,0xFC,0x00,0x00,
+    0x00,0x00,0x3F,0x80,0x1F,0xFE,0x00,0x00,0x00,0x00,0x3F,0x00,0x0F,0xFF,0x00,0x00,
+    0x00,0x00,0x1E,0x00,0x07,0xFF,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xC0,0x00,
+    0x00,0x00,0x00,0x00,0x00,0x3F,0xE0,0x00,0x00,0x00,0x00,0x00,0x00,0x1F,0xF0,0x00,
+    0x00,0x00,0x00,0x0F,0x00,0x0F,0xF8,0x00,0x00,0x00,0x00,0x1F,0x80,0x07,0xFC,0x00,
+    0x00,0x00,0x00,0x1F,0x80,0x03,0xFE,0x00,0x00,0x00,0x00,0x1F,0x80,0x01,0xFF,0x00,
+    0x00,0x00,0x00,0x1F,0x80,0x00,0xFF,0x80,0x00,0x00,0x00,0x0F,0x80,0x00,0x7F,0xC0,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x3F,0xE0,0x00,0x00,0x00,0x00,0x00,0x00,0x1F,0xF0,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x0F,0xF0,0x00,0x00,0x00,0x00,0x00,0x00,0x07,0xF0,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x03,0xE0,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0xC0,
+};
+
+void drawWifiIcon(WifiIcon icon) {
+    constexpr int16_t left = 32;
+    if (icon == WifiIcon::Off) {
+        oled.drawBitmap(left + 2, 2, kWifiOffBitmap, 60, 60, SSD1306_WHITE);
+        return;
+    }
+    if (icon == WifiIcon::Wifi) {
+        oled.drawBitmap(left + 2, 10, kWifiOuterBitmap, 60, 17, SSD1306_WHITE);
+    }
+    if (icon == WifiIcon::Wifi || icon == WifiIcon::High) {
+        oled.drawBitmap(left + 10, 24, kWifiMiddleBitmap, 44, 13, SSD1306_WHITE);
+    }
+    if (icon != WifiIcon::Zero) {
+        oled.drawBitmap(left + 20, 37, kWifiInnerBitmap, 24, 10, SSD1306_WHITE);
+    }
+    oled.drawBitmap(left + 29, 50, kWifiDotBitmap, 6, 6, SSD1306_WHITE);
+}
+
+WifiIcon stationWifiIcon(int32_t rssi) {
+    if (rssi >= -60) return WifiIcon::Wifi;
+    if (rssi >= -70) return WifiIcon::High;
+    if (rssi >= -80) return WifiIcon::Low;
+    return WifiIcon::Zero;
+}
+
+void renderWifiState(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &status,
+    bool) {
+    if (status.setupApActive) {
+        renderSetupQr(config, status, false);
+        return;
+    }
+
+    const WifiIcon icon = status.stationConnected ?
+        stationWifiIcon(status.stationRssi) : WifiIcon::Off;
+    drawWifiIcon(icon);
+}
+
+void renderSetupCredentials(
+    const configuration::DeviceConfig &,
+    const RuntimeStatus &status,
+    bool) {
+    oled.setTextSize(kCompactFont);
+    if (status.setupApActive) {
+        // This is the setup recovery page. Keep its proven SSID/password
+        // layout intact; Screen 2's QR is only shown for this same live AP.
+        drawCenteredText("Wi-Fi", kCompactFont, 0, 128, 6);
+        drawCenteredText(
+            status.setupSsid,
+            largestReadableFont(status.setupSsid, 128),
+            0,
+            128,
+            18);
+        drawCenteredText("Password", kCompactFont, 0, 128, 36);
+        drawCenteredText(
+            status.setupPassword,
+            largestReadableFont(status.setupPassword, 128),
+            0,
+            128,
+            51);
+        return;
+    }
+
+    if (status.stationConnected) {
+        char rssiText[16];
+        snprintf(rssiText, sizeof(rssiText), "%ld dBm", static_cast<long>(status.stationRssi));
+        drawCenteredText("Connected", kCompactFont, 0, 128, 6);
+        drawCenteredText(
+            status.stationSsid,
+            largestReadableFont(status.stationSsid, 128),
+            0,
+            128,
+            22);
+        drawCenteredText(rssiText, kLargeFont, 0, 128, 49);
+    } else if (status.stationConfigured) {
+        drawCenteredText(
+            status.stationSsid,
+            largestReadableFont(status.stationSsid, 128),
+            0,
+            128,
+            22);
+        drawCenteredText("Disconnected", kCompactFont, 0, 128, 44);
+    } else {
+        drawCenteredText("Wi-Fi not configured", kCompactFont, 0, 128, 32);
+    }
+}
+
+void renderSerialPage(
+    const configuration::DeviceConfig &config,
+    const RuntimeStatus &,
+    bool) {
+    char baudText[12];
+    snprintf(baudText, sizeof(baudText), "%lu", static_cast<unsigned long>(config.baud));
+    drawCenteredText(baudText, kLargeFont, 0, 128, 18);
+    drawCenteredText(
+        configuration::framingName(static_cast<configuration::Framing>(config.framing)),
+        kLargeFont,
+        0,
+        128,
+        39);
+    drawCenteredText("Hold to change", kCompactFont, 0, 128, 59);
+}
 
 void drawCenteredText(
     const char *text,
@@ -81,29 +454,57 @@ void drawCenteredText(
     oled.print(text);
 }
 
-void drawLargeProductTitle() {
-    constexpr char title[] = "Serial2WiFi";
-    constexpr int16_t glyphAdvance = 11;
-    constexpr int16_t titleWidth = (sizeof(title) - 1) * glyphAdvance - 1;
-    constexpr int16_t centerY = 16;
-
+uint8_t largestReadableFont(const char *text, int16_t regionWidth) {
     oled.setTextSize(kLargeFont);
+    int16_t textX = 0;
+    int16_t textY = 0;
+    uint16_t textWidth = 0;
+    uint16_t textHeight = 0;
+    oled.getTextBounds(text, 0, 0, &textX, &textY, &textWidth, &textHeight);
+    return textWidth <= static_cast<uint16_t>(regionWidth) ? kLargeFont : kCompactFont;
+}
+
+void drawCompressedText(
+    const char *text,
+    uint8_t textSize,
+    int16_t glyphAdvance,
+    int16_t regionLeft,
+    int16_t regionWidth,
+    int16_t centerY) {
+    oled.setTextSize(textSize);
     int16_t textX = 0;
     int16_t textY = 0;
     uint16_t unusedWidth = 0;
     uint16_t textHeight = 0;
-    oled.getTextBounds(title, 0, 0, &textX, &textY, &unusedWidth, &textHeight);
-    const int16_t firstX = (128 - titleWidth) / 2;
+    oled.getTextBounds(text, 0, 0, &textX, &textY, &unusedWidth, &textHeight);
+    const int16_t textWidth = static_cast<int16_t>(strlen(text)) * glyphAdvance - 1;
+    const int16_t firstX = regionLeft + (regionWidth - textWidth) / 2;
     const int16_t firstY = centerY - static_cast<int16_t>(textHeight) / 2 - textY;
-    for (size_t index = 0; index < sizeof(title) - 1; ++index) {
+    for (size_t index = 0; text[index] != '\0'; ++index) {
         oled.drawChar(
             firstX + static_cast<int16_t>(index) * glyphAdvance,
             firstY,
-            title[index],
+            text[index],
             SSD1306_WHITE,
             SSD1306_BLACK,
-            kLargeFont);
+            textSize);
     }
+}
+
+void drawLargeProductTitle() {
+    drawCompressedText("Serial2WiFi", kLargeFont, 11, 0, 128, 16);
+}
+
+void renderBrandPage(
+    const configuration::DeviceConfig &,
+    const RuntimeStatus &,
+    bool) {
+    drawLargeProductTitle();
+    drawCenteredText("synapse.sr", kLargeFont, 0, 128, 48);
+}
+
+void renderPageTitle(Page page) {
+    drawCenteredText(pageDescription(page).introduction, kLargeFont, 0, 128, 32);
 }
 
 void resetLine(TextLine &line, display_history::Direction direction) {
@@ -138,7 +539,7 @@ void renderStatusRow(
     oled.setTextSize(kCompactFont);
     if (status.serialError) {
         snprintf(line, sizeof(line), "SERIAL ERROR");
-    } else if (status.apActive && phase >= 4000) {
+    } else if (status.setupApActive && phase >= 4000) {
         snprintf(line, sizeof(line), "P:%s", status.setupPassword);
     } else {
         configuration::StatusBar bar = configuration::statusBar(config);
@@ -173,7 +574,7 @@ void renderStatusRow(
                     status.stationConnected ? "OK" : "--",
                     status.tcpConnected ? "OK" : "--");
             } else {
-                if (status.apActive) {
+                if (status.setupApActive) {
                     snprintf(line, sizeof(line), "SETUP ON");
                 } else if (status.stationConnected) {
                     const String ip = status.stationIp.toString();
@@ -283,6 +684,32 @@ void formatRate(char *destination, size_t capacity, uint32_t value) {
     }
 }
 
+void formatBuildNumber(char *destination, size_t capacity) {
+    static const char *months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+    char buildDate[12]{};
+    char buildTime[9]{};
+    strncpy(buildDate, __DATE__, sizeof(buildDate) - 1);
+    strncpy(buildTime, __TIME__, sizeof(buildTime) - 1);
+    uint8_t monthNumber = 0;
+    for (uint8_t month = 0; month < 12; ++month) {
+        if (strncmp(buildDate, months[month], 3) == 0) {
+            monthNumber = month + 1;
+            break;
+        }
+    }
+    const char dayTens = buildDate[4] == ' ' ? '0' : buildDate[4];
+    snprintf(destination, capacity, "%c%c%c%c%c%c-%c%c%c%c%c%c%c",
+        buildDate[9], buildDate[10],
+        static_cast<char>('0' + monthNumber / 10),
+        static_cast<char>('0' + monthNumber % 10),
+        dayTens, buildDate[5],
+        buildTime[0], buildTime[1], buildTime[3], buildTime[4],
+        buildTime[6], buildTime[7], buildTime[8]);
+}
+
 void formatBytes(char *destination, size_t capacity, uint64_t value) {
     if (value >= 1024ULL * 1024ULL) {
         snprintf(destination, capacity, "%.1fMB", static_cast<double>(value) / (1024.0 * 1024.0));
@@ -295,7 +722,8 @@ void formatBytes(char *destination, size_t capacity, uint64_t value) {
 
 void renderStats(
     const configuration::DeviceConfig &config,
-    const RuntimeStatus &status) {
+    const RuntimeStatus &status,
+    bool) {
     char serialRateText[12];
     char networkRateText[12];
     char serialTotalText[12];
@@ -331,6 +759,10 @@ void renderStats(
     oled.setCursor(0, 48);
     oled.printf("%lu %s", static_cast<unsigned long>(config.baud),
         configuration::framingName(static_cast<configuration::Framing>(config.framing)));
+    // Keep the full baud/framing value readable on the left. The compact
+    // build string fits on the right without overwriting it, including at
+    // the widest supported baud rate.
+    drawCompressedText(firmwareBuildNumber, kCompactFont, 4, 72, 56, 52);
     oled.setCursor(0, 56);
     oled.printf("U %lu/%lu/%lu/%lu", static_cast<unsigned long>(status.serialFifoOverflowErrors),
         static_cast<unsigned long>(status.serialBufferOverflowErrors),
@@ -338,38 +770,10 @@ void renderStats(
         static_cast<unsigned long>(status.serialParityErrors));
 }
 
-void renderSetupDetails(
-    const configuration::DeviceConfig &config,
-    const RuntimeStatus &status) {
-    // The values themselves are the useful setup instructions. Literal
-    // protocol labels consume the same pixels and make the credentials harder
-    // to read on this small display.
-    drawCenteredText(status.setupSsid, kLargeFont, 0, 128, 10);
-    drawCenteredText(status.setupPassword, kLargeFont, 0, 128, 32);
-
-    char serialSettings[24];
-    snprintf(serialSettings, sizeof(serialSettings), "%lu %s",
-        static_cast<unsigned long>(config.baud),
-        configuration::framingName(static_cast<configuration::Framing>(config.framing)));
-    oled.setTextSize(kLargeFont);
-    int16_t textX = 0;
-    int16_t textY = 0;
-    uint16_t textWidth = 0;
-    uint16_t textHeight = 0;
-    oled.getTextBounds(serialSettings, 0, 0, &textX, &textY, &textWidth, &textHeight);
-    const uint8_t serialFont = textWidth <= 128 ? kLargeFont : kCompactFont;
-    drawCenteredText(serialSettings, serialFont, 0, 128, 54);
-}
-
-void renderSetupBaud(const configuration::DeviceConfig &config) {
-    // The fitted large title leaves the baud value as the only changing field.
-    drawLargeProductTitle();
-    char baud[12];
-    snprintf(baud, sizeof(baud), "%lu", static_cast<unsigned long>(config.baud));
-    drawCenteredText(baud, kLargeFont, 0, 128, 48);
-}
-
-void renderSetupQr(const RuntimeStatus &status) {
+void renderSetupQr(
+    const configuration::DeviceConfig &,
+    const RuntimeStatus &status,
+    bool) {
     char wifiPayload[96];
     snprintf(wifiPayload, sizeof(wifiPayload), "WIFI:T:WPA;S:%s;P:%s;;",
         status.setupSsid, status.setupPassword);
@@ -378,7 +782,9 @@ void renderSetupQr(const RuntimeStatus &status) {
     QRCode qr;
     // Setup credentials are migrated to the compact form before this page is
     // shown. Version 2-L at 2x is the one supported physical layout; never
-    // silently substitute a smaller or denser legacy QR.
+    // silently substitute a smaller or denser legacy QR. Keep it pinned to
+    // the left so the right column can carry the manual OPEN 192.168.4.1
+    // fallback.
     constexpr uint8_t qrVersion = 2;
     if (qrcode_initText(&qr, qrStorage, qrVersion, ECC_LOW, wifiPayload) < 0) {
         return;
@@ -398,56 +804,16 @@ void renderSetupQr(const RuntimeStatus &status) {
             }
         }
     }
-}
 
-void renderSetupBrand() {
-    drawLargeProductTitle();
-    drawCenteredText("synapse.sr", kLargeFont, 0, 128, 48);
-}
-
-void renderMenu(const configuration::DeviceConfig &config) {
-    const bool screenIsOff = configuration::screenOff(config);
-    const char *liveView = configuration::liveView(config) == configuration::LiveView::Hex ?
-        "Hex" : "Text";
-    const char *statusBar = "Auto";
-    switch (configuration::statusBar(config)) {
-        case configuration::StatusBar::Auto: statusBar = "Auto"; break;
-        case configuration::StatusBar::Serial: statusBar = "Ser"; break;
-        case configuration::StatusBar::Connection: statusBar = "Conn"; break;
-        case configuration::StatusBar::Network: statusBar = "Net"; break;
-    }
-
-    const char *labels[] = {"Live", "Status", "Screen"};
-    const char *values[] = {liveView, statusBar, screenIsOff ? "Off" : "On"};
-    constexpr int16_t rowTop = 2;
-    constexpr int16_t rowHeight = 20;
-    constexpr int16_t rowTextLeft = 2;
-    constexpr int16_t valueRight = 126;
-
-    oled.setTextSize(kLargeFont);
-    for (uint8_t row = 0; row < 3; ++row) {
-        const int16_t y = rowTop + static_cast<int16_t>(row) * rowHeight;
-        const bool selected = row == menuRow;
-        if (selected) {
-            oled.fillRect(0, y, 128, 18, SSD1306_WHITE);
-            oled.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-        } else {
-            oled.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-        }
-        oled.setCursor(rowTextLeft, y + 1);
-        oled.print(labels[row]);
-
-        if (values[row][0] != '\0') {
-            int16_t x1 = 0;
-            int16_t y1 = 0;
-            uint16_t width = 0;
-            uint16_t height = 0;
-            oled.getTextBounds(values[row], 0, 0, &x1, &y1, &width, &height);
-            oled.setCursor(valueRight - static_cast<int16_t>(width) - x1, y + 1 - y1);
-            oled.print(values[row]);
-        }
-    }
-    oled.setTextColor(SSD1306_WHITE);
+    const int16_t textLeft = kSetupQrTextLeftPixels;
+    const int16_t textWidth = kSetupQrTextWidth;
+    drawCenteredText("OPEN", largestReadableFont("OPEN", textWidth), textLeft, textWidth, 24);
+    drawCenteredText(
+        "192.168.4.1",
+        largestReadableFont("192.168.4.1", textWidth),
+        textLeft,
+        textWidth,
+        40);
 }
 
 void renderSerialError() {
@@ -463,16 +829,8 @@ void renderSerialError() {
 
 void renderOverlay(
     prg_button::Overlay overlay,
-    uint32_t countdown,
-    uint32_t baud) {
+    uint32_t countdown) {
     switch (overlay) {
-        case prg_button::Overlay::Baud: {
-            drawCenteredText("BAUD", kLargeFont, 0, 128, 16);
-            char baudText[12];
-            snprintf(baudText, sizeof(baudText), "%lu", static_cast<unsigned long>(baud));
-            drawCenteredText(baudText, kLargeFont, 0, 128, 44);
-            break;
-        }
         case prg_button::Overlay::ResetWarning:
             oled.setTextSize(kLargeFont);
             oled.setCursor(22, 0);
@@ -515,12 +873,25 @@ void renderOverlay(
 }  // namespace
 
 void begin() {
+    formatBuildNumber(firmwareBuildNumber, sizeof(firmwareBuildNumber));
     pinMode(kResetPin, OUTPUT);
     digitalWrite(kResetPin, LOW);
     delay(20);
     digitalWrite(kResetPin, HIGH);
     Wire.begin(kSdaPin, kSclPin);
     ready = oled.begin(SSD1306_SWITCHCAPVCC, kAddress);
+    // Start the visible boot indication on the first render, after the rest
+    // of firmware startup has completed.
+    bootBrandingStartedAt = 0;
+    pageInitialized = false;
+    displayWokenFromOff = false;
+    screenSaverActive = false;
+    renderRequested = true;
+    lastUserInteraction = 0;
+    pageTitleVisible = false;
+    pageTitleStartedAt = 0;
+    serialTrafficRedirected = false;
+    previousObservation = {};
     if (ready) {
         oled.clearDisplay();
         oled.setTextSize(kCompactFont);
@@ -530,71 +901,47 @@ void begin() {
     }
 }
 
-void openMenu() {
-    menuIsOpen = true;
-    menuRow = 0;
-    lastMenuInteraction = millis();
-}
-
-void closeMenu() {
-    menuIsOpen = false;
-}
-
-bool menuOpen() {
-    return menuIsOpen;
-}
-
-void moveMenuNext() {
-    if (!menuIsOpen) return;
-    if (menuRow == 2) {
-        menuRow = 0;
-        menuIsOpen = false;
-        setupPage = SetupPage::Brand;
-    } else {
-        ++menuRow;
-    }
-    lastMenuInteraction = millis();
-}
-
-MenuAction selectMenuItem() {
-    if (!menuIsOpen) return MenuAction::None;
-    lastMenuInteraction = millis();
-    switch (static_cast<MenuRow>(menuRow)) {
-        case MenuRow::LiveView: return MenuAction::ToggleLiveView;
-        case MenuRow::StatusBar: return MenuAction::CycleStatusBar;
-        case MenuRow::Screen: return MenuAction::ToggleScreen;
-    }
-    return MenuAction::None;
-}
-
-void serviceMenuTimeout(bool buttonPressed) {
-    if (menuIsOpen && !buttonPressed && millis() - lastMenuInteraction >= kMenuInactivityMs) {
-        closeMenu();
-    }
-}
-
-void advanceSetupPage() {
-    if (menuIsOpen) {
-        moveMenuNext();
-    } else if (setupPage == SetupPage::Baud) {
-        setupPage = SetupPage::Details;
-    } else if (setupPage == SetupPage::Details) {
-        setupPage = SetupPage::Qr;
-    } else if (setupPage == SetupPage::Qr) {
-        openMenu();
-    } else {
-        setupPage = SetupPage::Baud;
-    }
-}
-
-bool setupPageActive(const configuration::DeviceConfig &config, bool serialTrafficSeen) {
-    return config.ssid[0] == '\0' && !serialTrafficSeen;
-}
-
-bool setupBaudPageActive(
+void handleShortClick(
     const configuration::DeviceConfig &config,
+    bool setupApAvailable,
     bool serialTrafficSeen) {
-    return setupPageActive(config, serialTrafficSeen) && setupPage == SetupPage::Baud;
+    const bool wakingScreenSaver = screenSaverActive;
+    const bool showingBootBranding = bootBrandingStartedAt == 0 ||
+        millis() - bootBrandingStartedAt < kBootBrandingMs;
+    noteUserInteraction();
+    if (!pageInitialized) initializePage(config, setupApAvailable, serialTrafficSeen);
+    normalizePage(config, setupApAvailable, serialTrafficSeen);
+    if (showingBootBranding) {
+        if (configuration::screenOff(config) && !displayWokenFromOff) {
+            displayWokenFromOff = true;
+        }
+        selectPage(preferredRuntimePage(config), true);
+        return;
+    }
+    if (wakingScreenSaver) {
+        showCurrentPageTitle();
+        return;
+    }
+    if (configuration::screenOff(config) && !displayWokenFromOff) {
+        if (setupOnlyPage(currentPage)) {
+            selectPage(Page::LiveText, true);
+        } else {
+            showCurrentPageTitle();
+        }
+        displayWokenFromOff = true;
+        return;
+    }
+    advancePage(setupApAvailable);
+}
+
+void noteUserInteraction() {
+    lastUserInteraction = millis();
+    screenSaverActive = false;
+    requestRender();
+}
+
+PageAction currentPageAction() {
+    return pageDescription(currentPage).action;
 }
 
 void render(
@@ -604,8 +951,11 @@ void render(
     bool serialTrafficSeen,
     const RuntimeStatus &status) {
     const uint32_t now = millis();
-    if (!ready || now - lastRefresh < kRefreshMs) return;
+    if (!ready || (!renderRequested && now - lastRefresh < kRefreshMs)) return;
     lastRefresh = now;
+    renderRequested = false;
+    if (bootBrandingStartedAt == 0) bootBrandingStartedAt = now;
+    if (lastUserInteraction == 0) lastUserInteraction = now;
 
     if (lastRateSample == 0) lastRateSample = now;
     if (now - lastRateSample >= kRateSampleMs) {
@@ -618,10 +968,34 @@ void render(
     }
 
     const bool overlayVisible = activeOverlay != prg_button::Overlay::None;
-    const bool setupPageIsActive = setupPageActive(config, serialTrafficSeen);
-    const auto mode = static_cast<configuration::DisplayMode>(config.display);
-    if (!setupPageIsActive) setupPage = SetupPage::Baud;
-    if (configuration::screenOff(config) && !overlayVisible && !menuIsOpen && !status.serialError) {
+    const bool showingBootBranding = now - bootBrandingStartedAt < kBootBrandingMs;
+    if (showingBootBranding && !overlayVisible) {
+        oled.clearDisplay();
+        oled.setTextSize(kCompactFont);
+        oled.setTextColor(SSD1306_WHITE);
+        oled.setTextWrap(false);
+        pageDescription(Page::Brand).show(config, status, serialTrafficSeen);
+        oled.display();
+        displayHasContent = true;
+        return;
+    }
+
+    if (!pageInitialized) initializePage(config, status.setupApActive, serialTrafficSeen);
+    normalizePage(config, status.setupApActive, serialTrafficSeen);
+
+    const bool screenIsOff = configuration::screenOff(config);
+
+    if (config.screenSaverSeconds == 0) {
+        screenSaverActive = false;
+    } else if (!screenSaverActive &&
+            static_cast<uint64_t>(now - lastUserInteraction) >=
+                static_cast<uint64_t>(config.screenSaverSeconds) * 1000ULL &&
+            !overlayVisible && !status.serialError) {
+        screenSaverActive = true;
+    }
+
+    if (((screenIsOff && !displayWokenFromOff) || screenSaverActive) &&
+            !overlayVisible && !status.serialError) {
         if (displayHasContent) {
             oled.clearDisplay();
             oled.display();
@@ -634,23 +1008,18 @@ void render(
     oled.setTextSize(kCompactFont);
     oled.setTextColor(SSD1306_WHITE);
     oled.setTextWrap(false);
+    const PageDescription &description = pageDescription(currentPage);
+    const bool titleShowing = pageTitleVisible && description.introduction != nullptr &&
+        now - pageTitleStartedAt < kPageTitleMs;
+    if (pageTitleVisible && !titleShowing) pageTitleVisible = false;
     if (overlayVisible) {
-        renderOverlay(activeOverlay, countdown, config.baud);
-    } else if (menuIsOpen) {
-        renderMenu(config);
+        renderOverlay(activeOverlay, countdown);
     } else if (status.serialError) {
         renderSerialError();
-    } else if (setupPageIsActive) {
-        if (setupPage == SetupPage::Baud) renderSetupBaud(config);
-        else if (setupPage == SetupPage::Qr) renderSetupQr(status);
-        else if (setupPage == SetupPage::Brand) renderSetupBrand();
-        else renderSetupDetails(config, status);
-    } else if (mode == configuration::DisplayMode::Hex) {
-        renderLiveHex(config, status, serialTrafficSeen);
-    } else if (mode == configuration::DisplayMode::Stats) {
-        renderStats(config, status);
+    } else if (titleShowing) {
+        renderPageTitle(currentPage);
     } else {
-        renderLiveText(config, status, serialTrafficSeen);
+        description.show(config, status, serialTrafficSeen);
     }
     oled.display();
     displayHasContent = true;

@@ -18,3 +18,7 @@ credentials.h
 # Windows shell files
 [Tt]humbs.db
 [Dd]esktop.ini
+compile_commands.json
+patch.txt
+.vscode/extensions.json
+

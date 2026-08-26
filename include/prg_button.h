@@ -6,7 +6,6 @@ namespace prg_button {
 
 enum class Overlay : uint8_t {
     None = 0,
-    Baud,
     ResetWarning,
     ResetComplete,
     ResetFailed,
@@ -15,17 +14,18 @@ enum class Overlay : uint8_t {
 
 struct HoldEvent {
     bool resetEligible;
+    bool first;
 };
 
-void begin();
-void bootComplete();
+void begin(uint32_t longPressMs, uint32_t longPressRepeatMs);
+void setLongPressMs(uint32_t longPressMs);
+void setLongPressRepeatMs(uint32_t longPressRepeatMs);
 void service();
 bool isPressed();
 
 bool takeSingleClick();
 bool takeHold(HoldEvent &event);
 bool takeFactoryResetRequest();
-void reportBaudCommit(bool succeeded);
 void reportSaveFailed();
 void reportFactoryReset(bool succeeded);
 bool restartPending();
