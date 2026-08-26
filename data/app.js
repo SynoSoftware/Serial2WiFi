@@ -13,6 +13,8 @@
         authenticated: false,
         terminalAvailable: false
     };
+    let authAvailable = false;
+    let authRetryTimer = null;
     let authCsrfToken = '';
     let configCsrfToken = '';
     let configurationBaseline = null;
@@ -224,6 +226,7 @@
             authenticated: Boolean(state.authenticated),
             terminalAvailable: Boolean(state.terminalAvailable)
         };
+        authAvailable = true;
         authCsrfToken = state.csrfToken || '';
         return auth;
     }
@@ -232,6 +235,14 @@
         $('authLoginFields').hidden = true;
         $('authBootstrapFields').hidden = true;
         setAuthError();
+
+        if (!authAvailable) {
+            $('authPanel').hidden = false;
+            $('authTitle').textContent = 'Management unavailable';
+            $('authText').textContent =
+                'Status is available, but sign-in is temporarily unavailable. Retrying automatically…';
+            return;
+        }
 
         if (auth.authenticated) {
             $('authPanel').hidden = true;
@@ -262,14 +273,14 @@
     function applyAccessModel(preferSetup = false) {
         $('bootView').hidden = true;
         $('navigation').hidden = false;
-        $('setupTab').hidden = !auth.authenticated;
-        $('terminalTab').hidden = !(auth.authenticated && auth.terminalAvailable);
-        $('securitySection').hidden = !auth.authenticated || !configurationLoaded;
+        $('setupTab').hidden = !authAvailable || !auth.authenticated;
+        $('terminalTab').hidden = !(authAvailable && auth.authenticated && auth.terminalAvailable);
+        $('securitySection').hidden = !authAvailable || !auth.authenticated;
 
         $('chooseNetwork').hidden = !auth.terminalAvailable;
         renderAuthPanel();
 
-        if (!auth.authenticated) {
+        if (!authAvailable || !auth.authenticated) {
             stopTerminal();
             selectView('statusView');
             return;
@@ -677,11 +688,15 @@
     function renderScanState(state, networks = []) {
         const list = $('networkList');
         list.replaceChildren();
-        const scanning = state === 'scanning';
-        $('scanProgress').hidden = !scanning;
-        $('scanAgain').hidden = scanning;
+        const pending = state === 'idle' || state === 'scanning';
+        $('scanProgress').hidden = !pending;
+        $('scanAgain').hidden = pending;
 
-        if (scanning) {
+        if (state === 'idle') {
+            $('scanState').textContent = 'Starting scan…';
+            return;
+        }
+        if (state === 'scanning') {
             $('scanState').textContent = 'Scanning for networks…';
             return;
         }
@@ -763,14 +778,19 @@
         return response;
     }
 
-    async function pollScan() {
+    async function pollScan(attempt = 0) {
         try {
             const response = await fetch('/api/wifi/scan', { cache: 'no-store' });
             if (!response.ok) throw new Error('scan failed');
             const result = await response.json();
             renderScanState(result.state, result.networks || []);
-            if (result.state === 'scanning') {
-                scanTimer = window.setTimeout(pollScan, 500);
+            if (result.state === 'idle' || result.state === 'scanning') {
+                if (attempt >= 40) {
+                    scanTimer = null;
+                    renderScanState('failed');
+                    return;
+                }
+                scanTimer = window.setTimeout(() => pollScan(attempt + 1), 500);
             } else {
                 scanTimer = null;
             }
@@ -811,6 +831,12 @@
         }
     }
 
+    function updateScreenSaverPresentation() {
+        const input = $('screenSaverSeconds');
+        const off = input.value.trim() === '' || Number(input.value) === 0;
+        input.closest('.unit-control')?.classList.toggle('unit-control-off', off);
+    }
+
     function fillConfiguration(config) {
         const values = {
             ssid: config.ssid || '',
@@ -842,7 +868,8 @@
         $('setupApEnabled').checked = values.setupApEnabled;
         $('longPressMs').value = values.longPressMs;
         $('longPressRepeatMs').value = values.longPressRepeatMs;
-        $('screenSaverSeconds').value = values.screenSaverSeconds;
+        $('screenSaverSeconds').value = Number(values.screenSaverSeconds) ? values.screenSaverSeconds : '';
+        updateScreenSaverPresentation();
 
         wifiPasswordSaved = Boolean(config.wifiPasswordSaved);
         configCsrfToken = config.csrfToken || '';
@@ -907,32 +934,43 @@
             }
         }
 
-        if (values.tcpMode === 'listen') {
-            const port = Number(values.tcpListenPort);
-            if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        const listenPort = Number(values.tcpListenPort);
+        const listenValid = Number.isInteger(listenPort) && listenPort >= 0 && listenPort <= 65535;
+        if (!listenValid) {
+            if (values.tcpMode === 'listen') {
                 setFieldError('tcpListenPort', 'Enter a port from 0 to 65535.');
-                valid = false;
+            } else {
+                setFieldError('tcpMode', 'Saved Listen settings are invalid. Select Listen for client to correct them.');
             }
-        } else {
-            const port = Number(values.tcpRemotePort);
-            const hasHost = Boolean(values.tcpRemoteHost);
-            const hasPort = Number.isInteger(port) && port > 0 && port <= 65535;
-            if (hasHost !== hasPort) {
-                if (!hasHost) setFieldError('tcpRemoteHost', 'Enter the server name or address.');
-                if (!hasPort) setFieldError('tcpRemotePort', 'Enter a port from 1 to 65535.');
-                valid = false;
+            valid = false;
+        }
+
+        const remotePort = Number(values.tcpRemotePort);
+        const hasRemoteHost = Boolean(values.tcpRemoteHost);
+        const hasRemotePort = Number.isInteger(remotePort) && remotePort > 0 && remotePort <= 65535;
+        const remotePortInRange = Number.isInteger(remotePort) && remotePort >= 0 && remotePort <= 65535;
+        const connectValid = hasRemoteHost === hasRemotePort && remotePortInRange;
+        if (!connectValid) {
+            if (values.tcpMode === 'connect') {
+                if (!hasRemoteHost && remotePort !== 0) {
+                    setFieldError('tcpRemoteHost', 'Enter the server name or address.');
+                }
+                if (hasRemoteHost && !hasRemotePort) {
+                    setFieldError('tcpRemotePort', 'Enter a port from 1 to 65535.');
+                } else if (!remotePortInRange) {
+                    setFieldError('tcpRemotePort', 'Enter a port from 0 to 65535.');
+                }
+            } else {
+                setFieldError('tcpMode', 'Saved Connect settings are invalid. Select Connect to server to correct them.');
             }
-            if (port < 0 || port > 65535 || !Number.isInteger(port)) {
-                setFieldError('tcpRemotePort', 'Enter a port from 0 to 65535.');
-                valid = false;
-            }
+            valid = false;
         }
 
         valid = validateNumberField('longPressMs', 100, 1000) && valid;
         valid = validateNumberField('longPressRepeatMs', 250, 1000) && valid;
         const screenSaver = fieldNumber('screenSaverSeconds');
         if (!Number.isInteger(screenSaver) || screenSaver < 0 || (screenSaver > 0 && screenSaver < 5)) {
-            setFieldError('screenSaverSeconds', 'Enter 0 for Off, or 5 seconds or more.');
+            setFieldError('screenSaverSeconds', 'Enter 5 seconds or more, or leave blank for Off.');
             valid = false;
         }
 
@@ -982,7 +1020,16 @@
 
     function backendErrorMessage(result, response) {
         if (result.error === 'recovery_unavailable') {
-            return 'This firmware cannot disable the Configuration AP safely.';
+            return 'The Configuration AP cannot be disabled in the current recovery state.';
+        }
+        if (result.error === 'invalid_timeout') {
+            return 'Enter a value within the allowed range.';
+        }
+        if (response.status === 400 && result.field) {
+            return 'Enter a valid value.';
+        }
+        if (response.status === 400) {
+            return 'One or more settings are invalid.';
         }
         if (response.status === 500) {
             return 'Settings could not be stored.';
@@ -990,17 +1037,42 @@
         if (response.status === 403) {
             return 'This request is not allowed from the current interface.';
         }
-        return result.error || 'Could not save settings.';
+        return 'Could not save settings.';
+    }
+
+    function showBackendFieldError(field, message) {
+        setFieldError(field, message);
+        const fieldMode = field === 'tcpListenPort'
+            ? 'listen'
+            : field === 'tcpRemoteHost' || field === 'tcpRemotePort'
+              ? 'connect'
+              : null;
+
+        if (fieldMode && $('tcpMode').value !== fieldMode) {
+            setFieldError(
+                'tcpMode',
+                fieldMode === 'listen'
+                    ? 'Saved Listen settings need attention. Select Listen for client to correct them.'
+                    : 'Saved Connect settings need attention. Select Connect to server to correct them.'
+            );
+            $('tcpMode').focus();
+            return;
+        }
+        $(field)?.focus();
     }
 
     async function handleSessionExpired() {
         try {
             await fetchAuth();
         } catch {
+            authAvailable = false;
             auth.authenticated = false;
+            scheduleAuthRetry();
         }
         applyAccessModel(false);
-        setAuthError('Your session expired. Sign in again; your entered settings are preserved.');
+        if (authAvailable) {
+            setAuthError('Your session expired. Sign in again; your entered settings are preserved.');
+        }
     }
 
     async function saveConfiguration(event) {
@@ -1011,6 +1083,7 @@
         }
 
         savePending = true;
+        let responseReceived = false;
         $('save').disabled = true;
         $('saveText').textContent = 'Saving…';
         showSaveFeedback('Saving changes…', 'warning', 'loader-circle');
@@ -1039,6 +1112,7 @@
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body
             });
+            responseReceived = true;
             const result = await safeJson(response);
 
             if (response.status === 401) {
@@ -1059,8 +1133,7 @@
                 }
 
                 if (result.field && $(`${result.field}Error`)) {
-                    setFieldError(result.field, backendErrorMessage(result, response));
-                    $(result.field)?.focus();
+                    showBackendFieldError(result.field, backendErrorMessage(result, response));
                 }
                 throw new Error(backendErrorMessage(result, response));
             }
@@ -1088,8 +1161,17 @@
 
             window.setTimeout(refreshStatusNow, 250);
         } catch (error) {
-            showSaveFeedback(error instanceof Error ? error.message : 'Could not save settings.', 'danger', 'circle-x');
-            announce('Settings were not saved. Entered values were preserved.');
+            if (!responseReceived) {
+                showSaveFeedback(
+                    'Could not confirm whether settings were saved. Your entries are preserved.',
+                    'warning',
+                    'triangle-alert'
+                );
+                announce('Could not confirm whether settings were saved. Your entered values are preserved.');
+            } else {
+                showSaveFeedback(error instanceof Error ? error.message : 'Could not save settings.', 'danger', 'circle-x');
+                announce('Settings were not saved. Entered values were preserved.');
+            }
         } finally {
             savePending = false;
             $('saveText').textContent = 'Save changes';
@@ -1122,7 +1204,6 @@
             refreshSaveState();
             $('setupLoading').hidden = true;
             $('configuration').hidden = false;
-            $('securitySection').hidden = false;
         } catch (error) {
             $('setupLoading').hidden = true;
             $('setupUnavailable').hidden = false;
@@ -1402,7 +1483,7 @@
             return;
         }
         setTerminalConnection('circle-check', 'Connected', 'success');
-        hint.textContent = 'Click the terminal to type directly. Pause affects display only.';
+        hint.textContent = 'Type directly; Tab moves focus. Pause affects display only.';
         output.setAttribute('aria-label', 'Serial terminal output. Focus here to type directly to the serial port.');
     }
 
@@ -1539,6 +1620,7 @@
 
     function sendTerminalKey(event) {
         if (!canSendTerminalBytes() || event.isComposing || event.metaKey || event.altKey) return;
+        if (event.key === 'Tab') return;
         if (event.ctrlKey) {
             if (event.key.toLowerCase() === 'v') return;
             if (event.key.toLowerCase() === 'c' && window.getSelection()?.toString()) return;
@@ -1551,24 +1633,23 @@
         }
 
         const special = {
-            Enter: terminalLineEnding(),
-            Backspace: new Uint8Array([0x08]),
-            Delete: new Uint8Array([0x7f]),
-            Tab: new Uint8Array([0x09]),
-            Escape: new Uint8Array([0x1b]),
-            ArrowUp: new Uint8Array([0x1b, 0x5b, 0x41]),
-            ArrowDown: new Uint8Array([0x1b, 0x5b, 0x42]),
-            ArrowRight: new Uint8Array([0x1b, 0x5b, 0x43]),
-            ArrowLeft: new Uint8Array([0x1b, 0x5b, 0x44])
+            Enter: { bytes: terminalLineEnding(), echo: true },
+            Backspace: { bytes: new Uint8Array([0x08]), echo: true },
+            Delete: { bytes: new Uint8Array([0x7f]), echo: false },
+            Escape: { bytes: new Uint8Array([0x1b]), echo: false },
+            ArrowUp: { bytes: new Uint8Array([0x1b, 0x5b, 0x41]), echo: false },
+            ArrowDown: { bytes: new Uint8Array([0x1b, 0x5b, 0x42]), echo: false },
+            ArrowRight: { bytes: new Uint8Array([0x1b, 0x5b, 0x43]), echo: false },
+            ArrowLeft: { bytes: new Uint8Array([0x1b, 0x5b, 0x44]), echo: false }
         };
         if (special[event.key]) {
             event.preventDefault();
-            sendTerminalBytes(special[event.key], false);
+            sendTerminalBytes(special[event.key].bytes, special[event.key].echo);
             return;
         }
         if (event.key.length === 1) {
             event.preventDefault();
-            sendTerminalBytes(terminalEncoder.encode(event.key), false);
+            sendTerminalBytes(terminalEncoder.encode(event.key));
         }
     }
 
@@ -1577,7 +1658,7 @@
         const text = event.clipboardData?.getData('text');
         if (!text) return;
         event.preventDefault();
-        sendTerminalBytes(terminalEncoder.encode(text), false);
+        sendTerminalBytes(terminalEncoder.encode(text));
     }
 
     function toggleTerminalPause() {
@@ -1717,12 +1798,17 @@
                 setFieldError(id);
                 clearSaveFeedback();
                 if (id === 'tcpMode') renderTcpFields();
+                if (id === 'screenSaverSeconds') updateScreenSaverPresentation();
                 refreshSaveState();
             });
             $(id).addEventListener('change', () => {
                 setFieldError(id);
                 clearSaveFeedback();
                 if (id === 'tcpMode') renderTcpFields();
+                if (id === 'screenSaverSeconds' && fieldNumber(id) === 0) {
+                    $(id).value = '';
+                    updateScreenSaverPresentation();
+                }
                 refreshSaveState();
             });
         });
@@ -1774,6 +1860,24 @@
         updateTerminalWriteAccess();
     }
 
+    function scheduleAuthRetry() {
+        if (authRetryTimer !== null || authAvailable) return;
+        authRetryTimer = window.setTimeout(retryAuth, 1500);
+    }
+
+    async function retryAuth() {
+        authRetryTimer = null;
+        try {
+            await fetchAuth();
+            applyAccessModel(auth.authenticated);
+        } catch {
+            authAvailable = false;
+            auth.authenticated = false;
+            applyAccessModel(false);
+            scheduleAuthRetry();
+        }
+    }
+
     async function initialize() {
         initializeTabs();
         initializeConfiguration();
@@ -1781,25 +1885,42 @@
         initializeTerminal();
 
         try {
-            await Promise.all([fetchStatus(), fetchAuth()]);
-            applyAccessModel(auth.authenticated);
+            await fetchStatus();
         } catch {
             $('bootView').innerHTML = '';
             $('bootView').append(createIcon('triangle-alert'), document.createTextNode('Could not reach the device. Retrying…'));
             window.setTimeout(initializeConnection, 1500);
             return;
         }
+
+        try {
+            await fetchAuth();
+        } catch {
+            authAvailable = false;
+            auth.authenticated = false;
+            scheduleAuthRetry();
+        }
+        applyAccessModel(auth.authenticated);
         pollStatus();
     }
 
     async function initializeConnection() {
         try {
-            await Promise.all([fetchStatus(), fetchAuth()]);
-            applyAccessModel(auth.authenticated);
-            pollStatus();
+            await fetchStatus();
         } catch {
             window.setTimeout(initializeConnection, 1500);
+            return;
         }
+
+        try {
+            await fetchAuth();
+        } catch {
+            authAvailable = false;
+            auth.authenticated = false;
+            scheduleAuthRetry();
+        }
+        applyAccessModel(auth.authenticated);
+        pollStatus();
     }
 
     initialize();
