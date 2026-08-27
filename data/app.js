@@ -16,6 +16,9 @@
     let authAvailable = false;
     let authRetryTimer = null;
     let authCsrfToken = '';
+    let authDialogNotice = null;
+    let authRequestPending = false;
+    let interruptedView = null;
     let configCsrfToken = '';
     let configurationBaseline = null;
     let wifiPasswordSaved = false;
@@ -31,7 +34,6 @@
     let wifiMode = 'summary';
     let wifiSnapshot = null;
     let passwordEditing = false;
-    let manualNetworkEdited = false;
     let scanTimer = null;
 
     let terminalWanted = false;
@@ -217,9 +219,16 @@
         ].forEach((field) => setFieldError(field));
     }
 
+    function clearWifiFieldErrors() {
+        ['ssid', 'wifiSecurity', 'wifiPassword'].forEach((field) => setFieldError(field));
+    }
+
     function setAuthError(message = '') {
-        $('authError').textContent = message;
-        $('authError').hidden = !message;
+        ['authError', 'authBootstrapError'].forEach((id) => {
+            const error = $(id);
+            error.textContent = message;
+            error.hidden = !message;
+        });
     }
 
     function setPasswordChangeError(message = '') {
@@ -236,19 +245,33 @@
         const input = $(button.dataset.passwordToggle);
         if (!input) return;
         input.type = shown ? 'text' : 'password';
-        button.querySelector('span').textContent = shown ? 'Hide' : 'Show';
         setIcon(button.querySelector('use'), shown ? 'eye-off' : 'eye');
-        button.setAttribute('aria-label', `${shown ? 'Hide' : 'Show'} password`);
+        // The authored aria-label names the field; only the pressed state changes.
+        button.setAttribute('aria-pressed', String(shown));
+    }
+
+    function hidePassword(id) {
+        const input = $(id);
+        if (!input) return;
+        input.type = 'password';
+        document.querySelectorAll(`[data-password-toggle="${id}"]`).forEach((button) => {
+            setPasswordToggle(button, false);
+        });
     }
 
     function clearAdminPasswordFields() {
         ['currentAdminPassword', 'newAdminPassword', 'confirmAdminPassword'].forEach((id) => {
             $(id).value = '';
-            $(id).type = 'password';
+            hidePassword(id);
         });
-        document.querySelectorAll('#passwordDialog [data-password-toggle]').forEach((button) => {
-            setPasswordToggle(button, false);
+    }
+
+    function clearAuthDialogSecrets() {
+        ['loginPassword', 'bootstrapPassword', 'bootstrapPasswordConfirm'].forEach((id) => {
+            $(id).value = '';
+            hidePassword(id);
         });
+        setAuthError();
     }
 
     function closePasswordDialog() {
@@ -273,51 +296,56 @@
         };
         authAvailable = true;
         authCsrfToken = state.csrfToken || '';
+        authStateChanged();
         return auth;
     }
 
-    function renderAuthPanel() {
-        $('authLoginFields').hidden = true;
-        $('authBootstrapFields').hidden = true;
-        $('authPanel').removeAttribute('data-mode');
-        setAuthError();
+    function authDialogMode() {
+        if (!authAvailable) return 'unavailable';
+        if (!auth.passwordSet && auth.terminalAvailable) return 'bootstrap';
+        if (!auth.passwordSet) return 'not-configured';
+        return 'login';
+    }
 
-        if (!authAvailable) {
-            $('authPanel').hidden = false;
-            $('authPanel').dataset.mode = 'unavailable';
-            $('authTitle').textContent = 'Management unavailable';
-            $('authText').textContent =
-                'Status is available, but sign-in is temporarily unavailable. Retrying automatically...';
-            return;
+    function renderAuthDialog() {
+        const mode = authDialogMode();
+        const dialog = $('authDialog');
+        // dataset.mode records what the dialog currently shows, so live auth
+        // changes can tell a real mode transition from a routine re-render.
+        const modeChanged = dialog.dataset.mode !== mode;
+        dialog.dataset.mode = mode;
+        $('authLoginFields').hidden = mode !== 'login';
+        $('authBootstrapFields').hidden = mode !== 'bootstrap';
+        $('closeAuthDialog').disabled = authRequestPending;
+
+        let title = 'Sign in to configure';
+        let text = '';
+        if (mode === 'unavailable') {
+            title = 'Configuration unavailable';
+            text = 'Status is available, but sign-in is temporarily unavailable. Retrying automatically...';
+        } else if (mode === 'bootstrap') {
+            title = 'Secure this device';
+            text = 'Create the administrator password to unlock device setup.';
+        } else if (mode === 'not-configured') {
+            title = 'Administrator password not set';
+            text = 'Connect through the Configuration AP to create the administrator password.';
+        } else {
+            title = authDialogNotice?.title || title;
+            text = authDialogNotice?.text || text;
         }
 
-        if (auth.authenticated) {
-            $('authPanel').hidden = true;
-            return;
-        }
+        $('authDialogTitle').textContent = title;
+        $('authDialogText').textContent = text;
+        return modeChanged;
+    }
 
-        $('authPanel').hidden = false;
-        if (!auth.passwordSet && auth.terminalAvailable) {
-            $('authPanel').dataset.mode = 'bootstrap';
-            $('authTitle').textContent = 'Secure this device';
-            $('authText').textContent =
-                'Create the administrator password to unlock device setup.';
-            $('authBootstrapFields').hidden = false;
-            return;
-        }
-
-        if (!auth.passwordSet) {
-            $('authPanel').dataset.mode = 'info';
-            $('authTitle').textContent = 'Administrator password not set';
-            $('authText').textContent =
-                'Connect through the Configuration AP to create the administrator password. Status remains available here.';
-            return;
-        }
-
-        $('authPanel').dataset.mode = 'login';
-        $('authTitle').textContent = 'Sign in to configure';
-        $('authText').textContent = 'Status remains available without signing in.';
-        $('authLoginFields').hidden = false;
+    // Single owner of "auth state changed while the dialog is open": every path
+    // that mutates auth (the /api/auth fetch and the /api/status poll) funnels
+    // here, so the dialog can never show a form the backend would reject, and
+    // focus follows only real mode transitions instead of routine re-renders.
+    function authStateChanged() {
+        if (!$('authDialog').open) return;
+        if (renderAuthDialog()) focusAuthDialog();
     }
 
     function showPublicStatus() {
@@ -328,9 +356,30 @@
         $('statusView').hidden = false;
     }
 
+    function setStatusPanelSemantics(authenticated) {
+        if (authenticated) {
+            $('statusView').setAttribute('role', 'tabpanel');
+            $('statusView').setAttribute('aria-labelledby', 'statusTab');
+        } else {
+            $('statusView').removeAttribute('role');
+            $('statusView').removeAttribute('aria-labelledby');
+        }
+    }
+
+    function configurationIsDirty() {
+        return configurationLoaded && !sameConfiguration(configurationValues(), configurationBaseline);
+    }
+
+    function rememberInterruptedWorkflow() {
+        if (selectedView === 'setupView' || selectedView === 'terminalView') {
+            interruptedView = selectedView;
+        } else if (configurationIsDirty()) {
+            interruptedView = 'setupView';
+        }
+    }
+
     function applyAccessModel(preferSetup = false) {
         const authenticated = authAvailable && auth.authenticated;
-        const firstUse = authAvailable && !auth.passwordSet && auth.terminalAvailable;
 
         $('bootView').hidden = true;
         $('navigation').hidden = !authenticated;
@@ -339,28 +388,75 @@
         $('terminalTab').hidden = !(authenticated && auth.terminalAvailable);
         $('securitySection').hidden = !authenticated;
         $('chooseNetwork').hidden = !auth.terminalAvailable;
-        renderAuthPanel();
+        $('configureButton').hidden = authenticated;
+        setStatusPanelSemantics(authenticated);
 
         if (!authenticated) {
             stopTerminal();
             document.body.classList.remove('terminal-active');
             if ($('passwordDialog').open) closePasswordDialog();
-            if (firstUse) {
-                selectedView = null;
-                $('setupView').hidden = true;
-                $('statusView').hidden = true;
-                $('terminalView').hidden = true;
-            } else {
-                showPublicStatus();
-            }
+            showPublicStatus();
             return;
         }
 
-        if (preferSetup || !selectedView || !visibleTabs().some((tab) => tab.dataset.view === selectedView)) {
+        const resumeView = interruptedView;
+        interruptedView = null;
+        if (resumeView && visibleTabs().some((tab) => tab.dataset.view === resumeView)) {
+            selectView(resumeView);
+        } else if (preferSetup) {
             selectView('setupView');
+        } else if (!selectedView || !visibleTabs().some((tab) => tab.dataset.view === selectedView)) {
+            selectView('statusView');
         } else {
             selectView(selectedView);
         }
+        refreshSaveState();
+    }
+
+    function focusAuthDialog() {
+        if (!$('authDialog').open || authRequestPending) return;
+        const mode = authDialogMode();
+        const target = mode === 'login'
+            ? $('loginPassword')
+            : mode === 'bootstrap'
+              ? $('bootstrapPassword')
+              : $('closeAuthDialog');
+        window.requestAnimationFrame(() => target.focus());
+    }
+
+    function openAuthDialog(notice = null) {
+        authDialogNotice = notice;
+        renderAuthDialog();
+        if (!$('authDialog').open) $('authDialog').showModal();
+        focusAuthDialog();
+    }
+
+    function closeAuthDialog() {
+        if (authRequestPending) return;
+        clearAuthDialogSecrets();
+        authDialogNotice = null;
+        if ($('authDialog').open) $('authDialog').close();
+    }
+
+    function setAuthRequestPending(pending) {
+        authRequestPending = pending;
+        $('loginButton').disabled = pending;
+        $('bootstrapButton').disabled = pending;
+        $('closeAuthDialog').disabled = pending;
+    }
+
+    // Losing authentication must not destroy the configuration draft, so this
+    // never calls clearProtectedSessionState(); only an intentional logout()
+    // may discard the user's work.
+    function handleAuthenticationLoss(notice, forcePrompt = false) {
+        const protectedViewActive = selectedView === 'setupView' || selectedView === 'terminalView';
+        rememberInterruptedWorkflow();
+        stopScanPolling();
+        // An interrupted scan must not resume presenting as still running when
+        // the user returns to the chooser after signing back in.
+        if (wifiMode === 'chooser') renderScanState('failed');
+        applyAccessModel(false);
+        if (forcePrompt || protectedViewActive) openAuthDialog(notice);
     }
 
     async function postAuth(path, values) {
@@ -376,20 +472,39 @@
         return { response, result: await safeJson(response) };
     }
 
-    async function loginWithPassword(password, preferSetup = true) {
+    // The firmware reports machine codes; people get sentences.
+    const authErrorMessages = {
+        invalid_password: 'Incorrect administrator password.',
+        incorrect_password: 'The current password is incorrect.',
+        too_many_attempts: 'Too many attempts. Wait a moment and try again.',
+        authentication_required: 'Your session ended. Sign in again.',
+        password_required: 'Enter a password.',
+        password_already_set: 'An administrator password already exists. Sign in instead.',
+        password_save_failed: 'The password could not be stored on the device.',
+        bootstrap_requires_setup_ap:
+            'Connect through the Configuration AP to create the administrator password.',
+        configuration_not_allowed: 'This request is not allowed from the current connection.',
+        csrf: 'The request was rejected. Reload the page and try again.'
+    };
+
+    function authErrorMessage(result, fallback) {
+        return authErrorMessages[result.error] || fallback;
+    }
+
+    async function loginWithPassword(password) {
         const { response, result } = await postAuth('/api/auth/login', { password });
         if (!response.ok) {
-            throw new Error(result.error || 'Incorrect administrator password.');
+            throw new Error(authErrorMessage(result, 'Incorrect administrator password.'));
         }
         await fetchAuth();
         if (!auth.authenticated) {
             throw new Error('Sign-in did not complete.');
         }
-        applyAccessModel(preferSetup);
     }
 
-    async function login() {
-        const button = $('loginButton');
+    async function login(event) {
+        event?.preventDefault();
+        if (authRequestPending) return;
         const password = $('loginPassword').value;
         if (!password) {
             setAuthError('Enter the administrator password.');
@@ -397,21 +512,28 @@
             return;
         }
 
-        button.disabled = true;
+        setAuthRequestPending(true);
         setAuthError();
         try {
-            await loginWithPassword(password, true);
+            await loginWithPassword(password);
             $('loginPassword').value = '';
+            setAuthRequestPending(false);
+            closeAuthDialog();
+            applyAccessModel(true);
             announce('Signed in.');
         } catch (error) {
+            // A failed request returns focus to the current mode's first field:
+            // disabling the submit button dropped focus, and the mode may have
+            // changed mid-request while the pending guard suppressed focus.
+            setAuthRequestPending(false);
             setAuthError(error instanceof Error ? error.message : 'Sign-in failed.');
-        } finally {
-            button.disabled = false;
+            focusAuthDialog();
         }
     }
 
-    async function bootstrapPassword() {
-        const button = $('bootstrapButton');
+    async function bootstrapPassword(event) {
+        event?.preventDefault();
+        if (authRequestPending) return;
         const password = $('bootstrapPassword').value;
         const confirm = $('bootstrapPasswordConfirm').value;
 
@@ -426,30 +548,64 @@
             return;
         }
 
-        button.disabled = true;
+        setAuthRequestPending(true);
         setAuthError();
         try {
             const { response, result } = await postAuth('/api/auth/password', {
                 newPassword: password
             });
             if (!response.ok) {
-                throw new Error(result.error || 'Could not create the administrator password.');
+                throw new Error(authErrorMessage(result, 'Could not create the administrator password.'));
             }
 
             await fetchAuth();
             if (!auth.authenticated) {
-                await loginWithPassword(password, true);
-            } else {
-                applyAccessModel(true);
+                await loginWithPassword(password);
             }
             $('bootstrapPassword').value = '';
             $('bootstrapPasswordConfirm').value = '';
+            setAuthRequestPending(false);
+            closeAuthDialog();
+            applyAccessModel(true);
             announce('Administrator password created.');
         } catch (error) {
+            // See login(): after a failed request, focus follows the rendered
+            // mode — which here may have become "login" if the password was
+            // created but the automatic sign-in failed.
+            setAuthRequestPending(false);
             setAuthError(error instanceof Error ? error.message : 'Could not create the administrator password.');
-        } finally {
-            button.disabled = false;
+            focusAuthDialog();
         }
+    }
+
+    // Discards the configuration draft, the terminal history and the baseline.
+    // Only logout() may call this: an involuntary authentication loss must
+    // leave the user's entered work intact.
+    function clearProtectedSessionState() {
+        configurationLoaded = false;
+        configurationLoading = false;
+        configurationBaseline = null;
+        configCsrfToken = '';
+        wifiPasswordSaved = false;
+        wifiSnapshot = null;
+        passwordEditing = false;
+        clearFieldErrors();
+        $('wifiPassword').value = '';
+        hidePassword('wifiPassword');
+        setWifiMode('summary');
+        $('configuration').hidden = true;
+        $('saveRow').hidden = true;
+        clearSaveFeedback();
+
+        stopTerminal();
+        terminalHistory.length = 0;
+        terminalRxBytes = 0;
+        terminalTxBytes = 0;
+        terminalPaused = false;
+        $('browserTerminal').dataset.paused = 'false';
+        $('terminalSendInput').value = '';
+        updateTerminalCounters();
+        renderTerminal();
     }
 
     async function logout() {
@@ -466,18 +622,21 @@
             return;
         }
 
-        configurationLoaded = false;
-        configurationBaseline = null;
-        configCsrfToken = '';
-        $('configuration').hidden = true;
-        $('saveRow').hidden = true;
-        stopScanPolling();
-        stopTerminal();
+        clearProtectedSessionState();
         applyAccessModel(false);
         announce('Signed out.');
     }
 
-    async function updateAdminPassword() {
+    function requestLogout() {
+        if (configurationIsDirty()) {
+            $('signoutDialog').showModal();
+            return;
+        }
+        logout();
+    }
+
+    async function updateAdminPassword(event) {
+        event?.preventDefault();
         const currentPassword = $('currentAdminPassword').value;
         const newPassword = $('newAdminPassword').value;
         const confirmPassword = $('confirmAdminPassword').value;
@@ -508,28 +667,23 @@
                 newPassword
             });
             if (!response.ok) {
-                throw new Error(result.error || 'Could not update the administrator password.');
+                throw new Error(authErrorMessage(result, 'Could not update the administrator password.'));
             }
 
             closePasswordDialog();
-            configurationLoaded = false;
-            configurationBaseline = null;
-            configCsrfToken = '';
-            $('configuration').hidden = true;
-            $('saveRow').hidden = true;
-            stopScanPolling();
-            stopTerminal();
 
             try {
                 await fetchAuth();
             } catch {
                 authAvailable = false;
-                auth.authenticated = false;
                 scheduleAuthRetry();
             }
 
-            applyAccessModel(false);
-            setAuthError('Password changed. Sign in again.');
+            auth.authenticated = false;
+            handleAuthenticationLoss(
+                { title: 'Password changed', text: 'Sign in again to continue configuring this device.' },
+                true
+            );
             announce('Administrator password changed. Sign in again.');
         } catch (error) {
             setPasswordChangeError(error instanceof Error ? error.message : 'Could not update the administrator password.');
@@ -539,14 +693,11 @@
     }
 
     function configurationValues() {
-        const useSnapshot = wifiMode === 'manual' && !manualNetworkEdited && wifiSnapshot;
-        const network = useSnapshot
-            ? wifiSnapshot
-            : {
-                  ssid: $('ssid').value,
-                  wifiSecurity: $('wifiSecurity').value,
-                  wifiPassword: passwordEditing ? $('wifiPassword').value : ''
-              };
+        const network = {
+            ssid: $('ssid').value,
+            wifiSecurity: $('wifiSecurity').value,
+            wifiPassword: passwordEditing ? $('wifiPassword').value : ''
+        };
 
         return {
             ssid: network.ssid,
@@ -581,17 +732,6 @@
         return first !== null && JSON.stringify(comparableValues(first)) === JSON.stringify(comparableValues(second));
     }
 
-    function networkIdentityChanged(values = configurationValues()) {
-        if (!configurationBaseline) {
-            return false;
-        }
-        return values.ssid !== configurationBaseline.ssid || values.wifiSecurity !== configurationBaseline.wifiSecurity;
-    }
-
-    function networkConfigurationChanged(values = configurationValues()) {
-        return networkIdentityChanged(values) || Boolean(values.wifiPassword);
-    }
-
 
     function networkValues() {
         return {
@@ -602,14 +742,28 @@
         };
     }
 
-    function savedNetworkValues() {
-        const security = configurationBaseline?.wifiSecurity;
-        return {
-            ssid: configurationBaseline?.ssid || '',
-            wifiSecurity: security === 'open' ? 'open' : 'secured',
-            wifiPassword: '',
-            passwordEditing: false
-        };
+    function sameNetwork(first, second) {
+        return first !== null && JSON.stringify(first) === JSON.stringify(second);
+    }
+
+    function networkTransactionChanged() {
+        return wifiSnapshot !== null && !sameNetwork(networkValues(), wifiSnapshot);
+    }
+
+    function savedCredentialApplies() {
+        return Boolean(
+            configurationBaseline &&
+            $('ssid').value === configurationBaseline.ssid &&
+            $('wifiSecurity').value === configurationBaseline.wifiSecurity &&
+            wifiPasswordSaved
+        );
+    }
+
+    function beginNetworkTransaction() {
+        if (!wifiSnapshot) {
+            // Cancel must restore the draft the user was editing, not an older persisted baseline.
+            wifiSnapshot = networkValues();
+        }
     }
 
     function restoreNetwork(values) {
@@ -621,9 +775,15 @@
 
     function setWifiMode(mode) {
         wifiMode = mode;
+        // Scan polling belongs to the chooser; it must not outlive it.
+        if (mode !== 'chooser') stopScanPolling();
         $('wifiSummary').hidden = mode !== 'summary';
         $('wifiChooser').hidden = mode !== 'chooser';
+        $('wifiCredentials').hidden = mode !== 'credentials';
         $('manualNetworkFields').hidden = mode !== 'manual';
+        $('wifiCredentialsName').textContent = $('ssid').value || 'Network';
+        $('backToNetworks').hidden = !auth.terminalAvailable;
+        $('backToNetworksFromManual').hidden = !auth.terminalAvailable;
         renderPasswordEditor();
     }
 
@@ -635,7 +795,9 @@
         $('wifiConfigured').hidden = !configured;
         $('wifiEmpty').hidden = configured;
         $('wifiCurrentName').textContent = ssid || '—';
-        $('wifiPending').hidden = !configured || !networkIdentityChanged();
+        const pending = networkTransactionChanged();
+        $('wifiPending').hidden = !configured || !pending;
+        $('wifiPendingActions').hidden = !pending;
         $('passwordSummary').hidden = !configured || !secured || passwordEditing;
         $('passwordState').textContent = wifiPasswordSaved ? 'Saved' : 'Not set';
         $('chooseNetwork').hidden = !auth.terminalAvailable;
@@ -644,26 +806,16 @@
 
     function renderPasswordEditor() {
         const secured = $('wifiSecurity').value === 'secured';
-        const visible = passwordEditing && secured;
+        const visible = (wifiMode === 'credentials' || wifiMode === 'manual') && passwordEditing && secured;
         $('passwordEditor').hidden = !visible;
         $('wifiPassword').disabled = !visible;
-        $('cancelPasswordChange').hidden =
-            wifiMode !== 'summary' || networkIdentityChanged() || !wifiPasswordSaved;
-    }
-
-    function setPasswordShown(shown) {
-        $('wifiPassword').type = shown ? 'text' : 'password';
-        $('showPasswordText').textContent = shown ? 'Hide' : 'Show';
-        setIcon($('showPasswordIcon'), shown ? 'eye-off' : 'eye');
     }
 
     function openNetworkChooser() {
+        beginNetworkTransaction();
         if (!auth.terminalAvailable) {
             showManualNetwork(true);
             return;
-        }
-        if (!wifiSnapshot) {
-            wifiSnapshot = savedNetworkValues();
         }
         clearSaveFeedback();
         setWifiMode('chooser');
@@ -671,29 +823,27 @@
     }
 
     function cancelNetworkEdit() {
-        stopScanPolling();
         if (wifiSnapshot) {
             restoreNetwork(wifiSnapshot);
         }
         wifiSnapshot = null;
-        manualNetworkEdited = false;
+        clearWifiFieldErrors();
+        hidePassword('wifiPassword');
         setWifiMode('summary');
         renderWifiSummary();
         refreshSaveState();
     }
 
     function showManualNetwork(preserveCurrent = false) {
-        stopScanPolling();
-        if (!wifiSnapshot) {
-            wifiSnapshot = savedNetworkValues();
-        }
+        beginNetworkTransaction();
         if (!preserveCurrent) {
             $('ssid').value = '';
             $('wifiSecurity').value = 'secured';
             $('wifiPassword').value = '';
             passwordEditing = true;
+        } else if ($('wifiSecurity').value === 'secured') {
+            passwordEditing = !savedCredentialApplies();
         }
-        manualNetworkEdited = false;
         clearSaveFeedback();
         setWifiMode('manual');
         renderPasswordEditor();
@@ -712,8 +862,7 @@
             configurationBaseline.ssid === ssid &&
             configurationBaseline.wifiSecurity === security;
         passwordEditing = secured && !(sameSavedNetwork && wifiPasswordSaved);
-        manualNetworkEdited = false;
-        setWifiMode('summary');
+        setWifiMode(passwordEditing ? 'credentials' : 'summary');
         renderWifiSummary();
         clearSaveFeedback();
         refreshSaveState();
@@ -724,21 +873,20 @@
     }
 
     function changePassword() {
+        beginNetworkTransaction();
         $('wifiPassword').value = '';
         passwordEditing = true;
         clearSaveFeedback();
-        setPasswordShown(false);
+        hidePassword('wifiPassword');
+        setWifiMode('credentials');
         renderWifiSummary();
         $('wifiPassword').focus();
     }
 
-    function cancelPasswordChange() {
-        $('wifiPassword').value = '';
-        passwordEditing = false;
-        clearSaveFeedback();
-        setPasswordShown(false);
-        renderWifiSummary();
-        refreshSaveState();
+    function returnToNetworkChooser() {
+        if (!auth.terminalAvailable) return;
+        setWifiMode('chooser');
+        scanNetworks();
     }
 
     function signalIcon(rssi) {
@@ -863,6 +1011,11 @@
     async function pollScan(attempt = 0) {
         try {
             const response = await fetch('/api/wifi/scan', { cache: 'no-store' });
+            if (response.status === 401) {
+                scanTimer = null;
+                await handleSessionExpired();
+                return;
+            }
             if (!response.ok) throw new Error('scan failed');
             const result = await response.json();
             renderScanState(result.state, result.networks || []);
@@ -890,6 +1043,10 @@
         renderScanState('scanning');
         try {
             const response = await configFetch('/api/wifi/scan', { method: 'POST' });
+            if (response.status === 401) {
+                await handleSessionExpired();
+                return;
+            }
             if (!response.ok) throw new Error('scan failed');
             await pollScan();
         } catch {
@@ -943,8 +1100,7 @@
         configCsrfToken = config.csrfToken || '';
         passwordEditing = false;
         wifiSnapshot = null;
-        manualNetworkEdited = false;
-        setPasswordShown(false);
+        hidePassword('wifiPassword');
         setWifiMode('summary');
         renderWifiSummary();
         renderTcpFields();
@@ -1043,7 +1199,10 @@
 
         if (!valid) {
             const firstInvalid = document.querySelector('[aria-invalid="true"]');
-            if (firstInvalid?.id) focusField(firstInvalid.id);
+            if (firstInvalid?.id) {
+                revealWifiField(firstInvalid.id);
+                focusField(firstInvalid.id);
+            }
         }
         return valid;
     }
@@ -1063,8 +1222,7 @@
         $('wifiPassword').value = '';
         passwordEditing = false;
         wifiSnapshot = null;
-        manualNetworkEdited = false;
-        setPasswordShown(false);
+        hidePassword('wifiPassword');
         setWifiMode('summary');
         renderWifiSummary();
         configurationBaseline = { ...values, wifiPassword: '' };
@@ -1090,6 +1248,17 @@
         return 'Could not save settings.';
     }
 
+    function revealWifiField(field) {
+        if (field === 'wifiPassword') {
+            beginNetworkTransaction();
+            passwordEditing = true;
+            setWifiMode('credentials');
+        } else if (field === 'ssid' || field === 'wifiSecurity') {
+            beginNetworkTransaction();
+            setWifiMode('manual');
+        }
+    }
+
     function showBackendFieldError(field, message) {
         setFieldError(field, message);
         const fieldMode = field === 'tcpListenPort'
@@ -1108,6 +1277,7 @@
             focusField('tcpMode');
             return;
         }
+        revealWifiField(field);
         focusField(field);
     }
 
@@ -1116,13 +1286,13 @@
             await fetchAuth();
         } catch {
             authAvailable = false;
-            auth.authenticated = false;
             scheduleAuthRetry();
         }
-        applyAccessModel(false);
-        if (authAvailable) {
-            setAuthError('Your session expired. Sign in again; your entered settings are preserved.');
-        }
+        auth.authenticated = false;
+        handleAuthenticationLoss({
+            title: 'Your session ended',
+            text: 'Sign in again; your entered settings are preserved.'
+        });
     }
 
     async function saveConfiguration(event) {
@@ -1393,6 +1563,23 @@
     }
 
     function renderStatus(status) {
+        if (authAvailable) {
+            const sessionEnded = auth.authenticated && !Boolean(status.authenticated);
+            const deviceStateChanged =
+                auth.passwordSet !== Boolean(status.passwordSet) ||
+                auth.terminalAvailable !== Boolean(status.terminalAvailable);
+            auth.passwordSet = Boolean(status.passwordSet);
+            auth.terminalAvailable = Boolean(status.terminalAvailable);
+            if (sessionEnded) {
+                auth.authenticated = false;
+                handleAuthenticationLoss({
+                    title: 'Your session ended',
+                    text: 'Sign in again; your entered settings are preserved.'
+                });
+            } else if (deviceStateChanged) {
+                authStateChanged();
+            }
+        }
         lastStatus = status;
         statusSeen = true;
         if (status.setupSsid) {
@@ -1804,24 +1991,23 @@
         $('enterNetwork').addEventListener('click', () => showManualNetwork(false));
         $('otherNetwork').addEventListener('click', () => showManualNetwork(false));
         $('cancelNetworkChange').addEventListener('click', cancelNetworkEdit);
+        $('cancelPendingNetworkChange').addEventListener('click', cancelNetworkEdit);
+        $('cancelCredentialsNetwork').addEventListener('click', cancelNetworkEdit);
         $('cancelManualNetwork').addEventListener('click', cancelNetworkEdit);
+        $('backToNetworks').addEventListener('click', returnToNetworkChooser);
+        $('backToNetworksFromManual').addEventListener('click', returnToNetworkChooser);
         $('scanAgain').addEventListener('click', scanNetworks);
         $('changePassword').addEventListener('click', changePassword);
-        $('cancelPasswordChange').addEventListener('click', cancelPasswordChange);
-        $('showPassword').addEventListener('click', () => setPasswordShown($('wifiPassword').type === 'password'));
+        $('retrySetup').addEventListener('click', loadConfiguration);
 
         ['ssid', 'wifiSecurity', 'wifiPassword'].forEach((id) => {
             $(id).addEventListener('input', () => {
-                if (wifiMode === 'manual') manualNetworkEdited = true;
                 if (id === 'ssid' || id === 'wifiSecurity') {
                     if ($('wifiSecurity').value === 'open') {
                         $('wifiPassword').value = '';
                         passwordEditing = false;
                     } else {
-                        passwordEditing =
-                            Boolean($('wifiPassword').value) ||
-                            networkIdentityChanged() ||
-                            !wifiPasswordSaved;
+                        passwordEditing = Boolean($('wifiPassword').value) || !savedCredentialApplies();
                     }
                     renderPasswordEditor();
                 }
@@ -1870,20 +2056,24 @@
     }
 
     function initializeSecurity() {
-        $('loginButton').addEventListener('click', login);
-        $('loginPassword').addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') login();
-        });
-        $('bootstrapButton').addEventListener('click', bootstrapPassword);
-        $('bootstrapPasswordConfirm').addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') bootstrapPassword();
-        });
+        $('configureButton').addEventListener('click', () => openAuthDialog());
+        $('authLoginFields').addEventListener('submit', login);
+        $('authBootstrapFields').addEventListener('submit', bootstrapPassword);
 
         document.querySelectorAll('[data-password-toggle]').forEach((button) => {
             button.addEventListener('click', () => {
                 const input = $(button.dataset.passwordToggle);
                 setPasswordToggle(button, input?.type === 'password');
             });
+        });
+
+        $('closeAuthDialog').addEventListener('click', closeAuthDialog);
+        $('authDialog').addEventListener('cancel', (event) => {
+            event.preventDefault();
+            closeAuthDialog();
+        });
+        $('authDialog').addEventListener('click', (event) => {
+            if (event.target === $('authDialog')) closeAuthDialog();
         });
 
         $('openPasswordChange').addEventListener('click', () => {
@@ -1897,8 +2087,14 @@
             event.preventDefault();
             closePasswordDialog();
         });
-        $('updatePassword').addEventListener('click', updateAdminPassword);
-        $('logoutButton').addEventListener('click', logout);
+        $('passwordChangeEditor').addEventListener('submit', updateAdminPassword);
+        $('logoutButton').addEventListener('click', requestLogout);
+        $('keepSession').addEventListener('click', () => $('signoutDialog').close());
+        $('confirmSignout').addEventListener('click', () => {
+            $('signoutDialog').close();
+            logout();
+        });
+        $('signoutDialog').addEventListener('cancel', (event) => event.preventDefault());
     }
 
     function initializeTerminal() {
@@ -1921,7 +2117,7 @@
         authRetryTimer = null;
         try {
             await fetchAuth();
-            applyAccessModel(auth.authenticated);
+            applyAccessModel(false);
         } catch {
             authAvailable = false;
             auth.authenticated = false;
@@ -1952,7 +2148,7 @@
             auth.authenticated = false;
             scheduleAuthRetry();
         }
-        applyAccessModel(auth.authenticated);
+        applyAccessModel(false);
         pollStatus();
     }
 
@@ -1971,7 +2167,7 @@
             auth.authenticated = false;
             scheduleAuthRetry();
         }
-        applyAccessModel(auth.authenticated);
+        applyAccessModel(false);
         pollStatus();
     }
 

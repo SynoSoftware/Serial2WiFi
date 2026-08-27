@@ -20,5 +20,6 @@ credentials.h
 [Dd]esktop.ini
 compile_commands.json
 patch.txt
-.vscode/extensions.json
+.vscode/
+.playwright-mcp/
 

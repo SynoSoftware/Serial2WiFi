@@ -14,6 +14,24 @@
                 <circle cx="17" cy="17" r="3" />
                 <circle cx="7" cy="7" r="3" />
             </symbol>
+            <symbol id="icon-log-in" viewBox="0 0 24 24">
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                <path d="m10 17 5-5-5-5" />
+                <path d="M15 12H3" />
+            </symbol>
+            <symbol id="icon-log-out" viewBox="0 0 24 24">
+                <path d="M10 17l5-5-5-5" />
+                <path d="M15 12H3" />
+                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            </symbol>
+            <symbol id="icon-key-round" viewBox="0 0 24 24">
+                <path d="M15.5 7.5a5.5 5.5 0 1 0-10.72 1.8L2 12v4h4v-2h2v-2h2l1.76-1.76A5.48 5.48 0 0 0 15.5 7.5Z" />
+                <circle cx="15.5" cy="7.5" r=".5" />
+            </symbol>
+            <symbol id="icon-arrow-left" viewBox="0 0 24 24">
+                <path d="m12 19-7-7 7-7" />
+                <path d="M19 12H5" />
+            </symbol>
             <symbol id="icon-activity" viewBox="0 0 24 24">
                 <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
             </symbol>
@@ -180,10 +198,22 @@
         <main class="shell">
             <header class="brand-row">
                 <div class="device-brand">
-                    <span class="product-name">Serial2WiFi</span>
+                    <h1 class="product-name">Serial2WiFi</h1>
                     <span id="deviceName" class="device-name">Loading...</span>
                 </div>
-                <span class="brand-name">v3.2 synapse.sr</span>
+                <div class="brand-actions">
+                    <button
+                        id="configureButton"
+                        class="secondary-button icon-text configure-button"
+                        type="button"
+                        hidden
+                    >
+                        <svg class="icon" aria-hidden="true">
+                            <use href="#icon-settings-2"></use></svg
+                        ><span>Configure</span>
+                    </button>
+                    <span class="brand-name">v3.2 synapse.sr</span>
+                </div>
             </header>
 
             <div id="navigation" class="navigation" hidden>
@@ -250,110 +280,6 @@
             </section>
 
             <section
-                id="authPanel"
-                class="access-panel"
-                hidden
-                aria-labelledby="authTitle"
-            >
-                <div class="access-shell">
-                    <div class="access-copy">
-                        <h1 id="authTitle">Sign in</h1>
-                        <p id="authText"></p>
-                    </div>
-
-                    <div id="authLoginFields" class="access-fields" hidden>
-                        <label for="loginPassword"
-                            >Administrator password</label
-                        >
-                        <div class="password-control">
-                            <input
-                                id="loginPassword"
-                                type="password"
-                                autocomplete="current-password"
-                            />
-                            <button
-                                class="inline-button password-toggle"
-                                type="button"
-                                data-password-toggle="loginPassword"
-                                aria-label="Show administrator password"
-                            >
-                                <svg class="icon" aria-hidden="true">
-                                    <use href="#icon-eye"></use></svg
-                                ><span>Show</span>
-                            </button>
-                        </div>
-                        <button
-                            id="loginButton"
-                            class="primary access-submit"
-                            type="button"
-                        >
-                            Sign in
-                        </button>
-                    </div>
-
-                    <div id="authBootstrapFields" class="access-fields" hidden>
-                        <div class="field">
-                            <label for="bootstrapPassword"
-                                >Administrator password</label
-                            >
-                            <div class="password-control">
-                                <input
-                                    id="bootstrapPassword"
-                                    type="password"
-                                    autocomplete="new-password"
-                                />
-                                <button
-                                    class="inline-button password-toggle"
-                                    type="button"
-                                    data-password-toggle="bootstrapPassword"
-                                    aria-label="Show administrator password"
-                                >
-                                    <svg class="icon" aria-hidden="true">
-                                        <use href="#icon-eye"></use></svg
-                                    ><span>Show</span>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="field">
-                            <label for="bootstrapPasswordConfirm"
-                                >Confirm password</label
-                            >
-                            <div class="password-control">
-                                <input
-                                    id="bootstrapPasswordConfirm"
-                                    type="password"
-                                    autocomplete="new-password"
-                                />
-                                <button
-                                    class="inline-button password-toggle"
-                                    type="button"
-                                    data-password-toggle="bootstrapPasswordConfirm"
-                                    aria-label="Show confirmed password"
-                                >
-                                    <svg class="icon" aria-hidden="true">
-                                        <use href="#icon-eye"></use></svg
-                                    ><span>Show</span>
-                                </button>
-                            </div>
-                        </div>
-                        <button
-                            id="bootstrapButton"
-                            class="primary access-submit"
-                            type="button"
-                        >
-                            Create password
-                        </button>
-                    </div>
-                    <p
-                        id="authError"
-                        class="field-error"
-                        role="alert"
-                        hidden
-                    ></p>
-                </div>
-            </section>
-
-            <section
                 id="setupView"
                 class="view"
                 role="tabpanel"
@@ -375,6 +301,15 @@
                         <div>
                             <h2>Settings unavailable</h2>
                             <p id="setupUnavailableText"></p>
+                            <button
+                                id="retrySetup"
+                                class="secondary-button icon-text"
+                                type="button"
+                            >
+                                <svg class="icon" aria-hidden="true">
+                                    <use href="#icon-refresh-cw"></use></svg
+                                ><span>Retry</span>
+                            </button>
                         </div>
                     </div>
 
@@ -410,10 +345,12 @@
                                         </div>
                                         <button
                                             id="changeNetwork"
-                                            class="text-button"
+                                            class="secondary-button icon-text"
                                             type="button"
                                         >
-                                            Change
+                                            <svg class="icon" aria-hidden="true">
+                                                <use href="#icon-wifi"></use></svg
+                                            ><span>Change network</span>
                                         </button>
                                     </div>
                                     <div
@@ -431,10 +368,25 @@
                                         >
                                         <button
                                             id="changePassword"
+                                            class="secondary-button icon-text"
+                                            type="button"
+                                        >
+                                            <svg class="icon" aria-hidden="true">
+                                                <use href="#icon-key-round"></use></svg
+                                            ><span>Change password</span>
+                                        </button>
+                                    </div>
+                                    <div
+                                        id="wifiPendingActions"
+                                        class="network-transaction-actions"
+                                        hidden
+                                    >
+                                        <button
+                                            id="cancelPendingNetworkChange"
                                             class="text-button"
                                             type="button"
                                         >
-                                            Change password
+                                            Cancel network change
                                         </button>
                                     </div>
                                 </div>
@@ -537,19 +489,61 @@
                             </div>
 
                             <div
+                                id="wifiCredentials"
+                                class="wifi-editor"
+                                hidden
+                            >
+                                <div class="editor-heading">
+                                    <div class="editor-title">
+                                        <strong id="wifiCredentialsName">Network</strong>
+                                        <span>Enter the network password.</span>
+                                    </div>
+                                    <div class="editor-actions">
+                                        <button
+                                            id="backToNetworks"
+                                            class="text-button icon-text"
+                                            type="button"
+                                        >
+                                            <svg class="icon" aria-hidden="true">
+                                                <use href="#icon-arrow-left"></use></svg
+                                            ><span>Networks</span>
+                                        </button>
+                                        <button
+                                            id="cancelCredentialsNetwork"
+                                            class="text-button"
+                                            type="button"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div
                                 id="manualNetworkFields"
                                 class="wifi-editor"
                                 hidden
                             >
                                 <div class="editor-heading">
                                     <strong>Network</strong
-                                    ><button
-                                        id="cancelManualNetwork"
-                                        class="text-button"
-                                        type="button"
-                                    >
-                                        Cancel
-                                    </button>
+                                    ><div class="editor-actions">
+                                        <button
+                                            id="backToNetworksFromManual"
+                                            class="text-button icon-text"
+                                            type="button"
+                                        >
+                                            <svg class="icon" aria-hidden="true">
+                                                <use href="#icon-arrow-left"></use></svg
+                                            ><span>Networks</span>
+                                        </button>
+                                        <button
+                                            id="cancelManualNetwork"
+                                            class="text-button"
+                                            type="button"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="network-grid">
                                     <div class="field">
@@ -595,16 +589,7 @@
                                 class="field password-editor"
                                 hidden
                             >
-                                <div class="field-heading">
-                                    <label for="wifiPassword">Password</label
-                                    ><button
-                                        id="cancelPasswordChange"
-                                        class="text-button"
-                                        type="button"
-                                    >
-                                        Cancel
-                                    </button>
-                                </div>
+                                <label for="wifiPassword">Password</label>
                                 <div class="password-control">
                                     <input
                                         id="wifiPassword"
@@ -614,16 +599,14 @@
                                         aria-describedby="wifiPasswordError"
                                     />
                                     <button
-                                        id="showPassword"
-                                        class="inline-button icon-text"
+                                        class="password-toggle"
                                         type="button"
+                                        data-password-toggle="wifiPassword"
+                                        aria-label="Show Wi-Fi password"
+                                        aria-pressed="false"
                                     >
                                         <svg class="icon" aria-hidden="true">
-                                            <use
-                                                id="showPasswordIcon"
-                                                href="#icon-eye"
-                                            ></use></svg
-                                        ><span id="showPasswordText">Show</span>
+                                            <use href="#icon-eye"></use></svg>
                                     </button>
                                 </div>
                                 <p
@@ -944,17 +927,21 @@
                             <div class="security-actions">
                                 <button
                                     id="openPasswordChange"
-                                    class="secondary-button"
+                                    class="secondary-button icon-text"
                                     type="button"
                                 >
-                                    Change password
+                                    <svg class="icon" aria-hidden="true">
+                                        <use href="#icon-key-round"></use></svg
+                                    ><span>Change password</span>
                                 </button>
                                 <button
                                     id="logoutButton"
-                                    class="text-button"
+                                    class="text-button icon-text"
                                     type="button"
                                 >
-                                    Sign out
+                                    <svg class="icon" aria-hidden="true">
+                                        <use href="#icon-log-out"></use></svg
+                                    ><span>Sign out</span>
                                 </button>
                             </div>
                         </div>
@@ -993,8 +980,6 @@
             <section
                 id="statusView"
                 class="view"
-                role="tabpanel"
-                aria-labelledby="statusTab"
                 hidden
             >
                 <div class="view-content">
@@ -1282,9 +1267,107 @@
             </section>
         </main>
 
+        <dialog id="authDialog" class="app-dialog auth-dialog" aria-labelledby="authDialogTitle">
+            <div class="dialog-header dialog-header-with-close">
+                <div>
+                    <h2 id="authDialogTitle">Sign in to configure</h2>
+                    <p id="authDialogText"></p>
+                </div>
+                <button
+                    id="closeAuthDialog"
+                    class="icon-button"
+                    type="button"
+                    aria-label="Close sign-in dialog"
+                >
+                    <svg class="icon" aria-hidden="true">
+                        <use href="#icon-x"></use></svg>
+                </button>
+            </div>
+            <form id="authLoginFields" class="dialog-body" hidden>
+                <div class="field">
+                    <label for="loginPassword">Administrator password</label>
+                    <div class="password-control">
+                        <input
+                            id="loginPassword"
+                            type="password"
+                            autocomplete="current-password"
+                        />
+                        <button
+                            class="password-toggle"
+                            type="button"
+                            data-password-toggle="loginPassword"
+                            aria-label="Show administrator password"
+                            aria-pressed="false"
+                        >
+                            <svg class="icon" aria-hidden="true">
+                                <use href="#icon-eye"></use></svg>
+                        </button>
+                    </div>
+                </div>
+                <p id="authError" class="field-error" role="alert" hidden></p>
+                <div class="dialog-actions">
+                    <button id="loginButton" class="primary icon-text" type="submit">
+                        <svg class="icon" aria-hidden="true">
+                            <use href="#icon-log-in"></use></svg
+                        ><span>Sign in</span>
+                    </button>
+                </div>
+            </form>
+            <form id="authBootstrapFields" class="dialog-body" hidden>
+                <div class="field">
+                    <label for="bootstrapPassword">Administrator password</label>
+                    <div class="password-control">
+                        <input
+                            id="bootstrapPassword"
+                            type="password"
+                            autocomplete="new-password"
+                        />
+                        <button
+                            class="password-toggle"
+                            type="button"
+                            data-password-toggle="bootstrapPassword"
+                            aria-label="Show administrator password"
+                            aria-pressed="false"
+                        >
+                            <svg class="icon" aria-hidden="true">
+                                <use href="#icon-eye"></use></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="bootstrapPasswordConfirm">Confirm password</label>
+                    <div class="password-control">
+                        <input
+                            id="bootstrapPasswordConfirm"
+                            type="password"
+                            autocomplete="new-password"
+                        />
+                        <button
+                            class="password-toggle"
+                            type="button"
+                            data-password-toggle="bootstrapPasswordConfirm"
+                            aria-label="Show confirmed password"
+                            aria-pressed="false"
+                        >
+                            <svg class="icon" aria-hidden="true">
+                                <use href="#icon-eye"></use></svg>
+                        </button>
+                    </div>
+                </div>
+                <p id="authBootstrapError" class="field-error" role="alert" hidden></p>
+                <div class="dialog-actions">
+                    <button id="bootstrapButton" class="primary icon-text" type="submit">
+                        <svg class="icon" aria-hidden="true">
+                            <use href="#icon-shield-check"></use></svg
+                        ><span>Create password</span>
+                    </button>
+                </div>
+            </form>
+        </dialog>
+
         <dialog
             id="passwordDialog"
-            class="password-dialog"
+            class="app-dialog"
             aria-labelledby="passwordDialogTitle"
         >
             <div class="dialog-header">
@@ -1295,7 +1378,7 @@
                     <p>Changing the password signs this browser out.</p>
                 </div>
             </div>
-            <div id="passwordChangeEditor" class="dialog-body">
+            <form id="passwordChangeEditor" class="dialog-body">
                 <div class="field">
                     <label for="currentAdminPassword">Current password</label>
                     <div class="password-control">
@@ -1305,14 +1388,14 @@
                             autocomplete="current-password"
                         />
                         <button
-                            class="inline-button password-toggle"
+                            class="password-toggle"
                             type="button"
                             data-password-toggle="currentAdminPassword"
                             aria-label="Show current password"
+                            aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg
-                            ><span>Show</span>
+                                <use href="#icon-eye"></use></svg>
                         </button>
                     </div>
                 </div>
@@ -1325,14 +1408,14 @@
                             autocomplete="new-password"
                         />
                         <button
-                            class="inline-button password-toggle"
+                            class="password-toggle"
                             type="button"
                             data-password-toggle="newAdminPassword"
                             aria-label="Show new password"
+                            aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg
-                            ><span>Show</span>
+                                <use href="#icon-eye"></use></svg>
                         </button>
                     </div>
                 </div>
@@ -1345,14 +1428,14 @@
                             autocomplete="new-password"
                         />
                         <button
-                            class="inline-button password-toggle"
+                            class="password-toggle"
                             type="button"
                             data-password-toggle="confirmAdminPassword"
                             aria-label="Show confirmed password"
+                            aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg
-                            ><span>Show</span>
+                                <use href="#icon-eye"></use></svg>
                         </button>
                     </div>
                 </div>
@@ -1368,17 +1451,44 @@
                     role="status"
                     hidden
                 ></p>
+                <div class="dialog-actions">
+                    <button
+                        id="cancelPasswordUpdate"
+                        class="secondary-button"
+                        type="button"
+                    >
+                        Cancel
+                    </button>
+                    <button id="updatePassword" class="primary icon-text" type="submit">
+                        <svg class="icon" aria-hidden="true">
+                            <use href="#icon-key-round"></use></svg
+                        ><span>Change password</span>
+                    </button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog
+            id="signoutDialog"
+            class="app-dialog confirmation-dialog"
+            aria-labelledby="signoutDialogTitle"
+        >
+            <div class="dialog-header">
+                <div>
+                    <h2 id="signoutDialogTitle">Discard unsaved changes?</h2>
+                    <p>
+                        Signing out will discard the configuration changes that have not been saved.
+                    </p>
+                </div>
             </div>
             <div class="dialog-actions">
-                <button
-                    id="cancelPasswordUpdate"
-                    class="secondary-button"
-                    type="button"
-                >
-                    Cancel
+                <button id="keepSession" class="secondary-button" type="button">
+                    Keep session
                 </button>
-                <button id="updatePassword" class="primary" type="button">
-                    Change password
+                <button id="confirmSignout" class="danger-button icon-text" type="button">
+                    <svg class="icon" aria-hidden="true">
+                        <use href="#icon-log-out"></use></svg
+                    ><span>Sign out and discard</span>
                 </button>
             </div>
         </dialog>

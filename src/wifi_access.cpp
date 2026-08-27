@@ -169,6 +169,13 @@ void startAp() {
     if (!apIsActive)
         return;
 
+    // Do not add WiFi.AP.enableDhcpCaptivePortal() here. It advertises DHCP
+    // option 114 (RFC 8910), which promises a captive-portal JSON API that
+    // RFC 8908 requires to be served over TLS. This device has no TLS, so
+    // Android prefers that API flow, fails it, and captive detection breaks.
+    // It was added and reverted three times. Capture works only through the
+    // legacy path: the wildcard DNS below plus the HTTP 302 probe responses
+    // in http_server.
     // Captive clients ask DNS for their own probe hostnames. Wildcarding only
     // the setup interface sends those probes to the local web UI.
     startCaptiveDns();

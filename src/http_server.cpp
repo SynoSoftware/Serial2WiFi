@@ -3,8 +3,10 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WebServer.h>
+#include <cerrno>
 #include <cstdint>
 #include <esp_system.h>
+#include <sys/socket.h>
 
 #include "browser_terminal.h"
 #include "management_auth.h"
@@ -629,6 +631,59 @@ void handleCaptiveProbe() {
     server.send(302, "text/plain", server.method() == HTTP_HEAD ? "" : "Captive portal");
 }
 
+// loop() is cooperative: the PRG button (including the factory-reset gesture),
+// the display, captive DNS and every other web client are serviced from it.
+// streamFile() must not be used here because NetworkClient::write() waits up to
+// ten one-second select intervals for each 1360-byte chunk and restarts that
+// budget on any partial write, so a phone that leaves the setup AP mid-download
+// holds loop() for minutes. These deadlines drop such a client instead. The
+// total deadline puts the floor for the largest asset near 65 kbps; a slower
+// client must move closer and retry, because button and display responsiveness
+// outrank serving pages at extreme range.
+constexpr uint32_t kFileSendStallMs = 1500;
+constexpr uint32_t kFileSendDeadlineMs = 10000;
+constexpr size_t kFileSendChunkSize = 1024;
+
+// Returns false when the client stalled, vanished or failed, so the caller can
+// drop the connection.
+bool sendFileBody(File &file, int descriptor) {
+    if (descriptor < 0) return false;
+
+    uint8_t chunk[kFileSendChunkSize];
+    size_t chunkLength = 0;
+    size_t chunkOffset = 0;
+    const uint32_t startedAt = millis();
+    uint32_t lastProgressAt = startedAt;
+
+    for (;;) {
+        if (chunkOffset == chunkLength) {
+            chunkLength = file.read(chunk, sizeof(chunk));
+            chunkOffset = 0;
+            if (chunkLength == 0) return true;
+        }
+
+        const ssize_t sent = send(
+            descriptor,
+            chunk + chunkOffset,
+            chunkLength - chunkOffset,
+            MSG_DONTWAIT);
+        if (sent > 0) {
+            chunkOffset += static_cast<size_t>(sent);
+            lastProgressAt = millis();
+        } else if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            // The socket send buffer is full. Yield one tick so this loop does
+            // not spin; the deadlines below still bound the total wait.
+            delay(1);
+        } else {
+            return false;
+        }
+
+        const uint32_t now = millis();
+        if (now - lastProgressAt >= kFileSendStallMs) return false;
+        if (now - startedAt >= kFileSendDeadlineMs) return false;
+    }
+}
+
 void serveFile(const char *path, const char *contentType) {
     if (!fromLocalInterface() || !canonicalLocalHost()) {
         if (fromSetupAp()) return handleCaptiveProbe();
@@ -639,7 +694,12 @@ void serveFile(const char *path, const char *contentType) {
     File file = LittleFS.open(path, "r");
     if (!file) return server.send(404, "text/plain", "Not found");
     server.sendHeader("Cache-Control", "no-store");
-    server.streamFile(file, contentType);
+    // The header block is a few hundred bytes into an empty send buffer, so the
+    // normal response path cannot block. Only the body needs the bounded sender.
+    server.setContentLength(file.size());
+    server.send(200, contentType, "");
+    WiFiClient &client = server.client();
+    if (!sendFileBody(file, client.fd())) client.stop();
     file.close();
 }
 
