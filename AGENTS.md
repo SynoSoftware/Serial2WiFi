@@ -2,7 +2,7 @@
 
 # Serial2WiFi
 
-The implementation plan is the authority for behavior, architecture, milestones, and accepted limitations.
+Plans are for historical reference material only. They are not the authority. Authority is the owner's request
 
 ## Engineering standard
 
@@ -97,7 +97,7 @@ A future maintainer should be able to distinguish:
 * implementation detail that can be changed freely;
 * product, hardware, and runtime invariants that must be preserved.
 
-Important rationale from the implementation plan must not disappear merely because the code can compile without it.
+Important rationale from the active implementation plan must not disappear merely because the code can compile without it.
 
 ## Ownership and concurrency
 
@@ -242,6 +242,5 @@ serial ⇄ transport ⇄ TCP
 ```
 
 If understanding the code requires an abstraction the product does not require, simplify it.
-
 
 

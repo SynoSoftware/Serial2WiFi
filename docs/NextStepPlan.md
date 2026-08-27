@@ -1,12 +1,14 @@
-# Serial2WiFi — Follow-up Decisions and Next-Step Plan
+# Serial2WiFi — Historical Follow-up Decisions
 
 Date: 2026-08-26
 
-This document follows `InitialPlan.md`. The initial plan remains the record of
-the original product contract. Where this document explicitly changes behavior,
-this document is the current decision for the next implementation step.
+Status: historical reference only.
 
-## 1. Next implementation step: preserve the AP/LAN boundary
+This document follows `InitialPlan.md`. The initial plan remains the record of
+the original product contract. This file records decisions that were active when
+it was written, but it is not current implementation authority.
+
+## 1. Historical decision: preserve the AP/LAN boundary
 
 Authenticated LAN management is intentional. The setup AP remains the
 bootstrap path and the only interface for Wi-Fi scans and the browser
@@ -32,7 +34,7 @@ The implementation must enforce this at the HTTP authorization boundary, not
 only by hiding controls in the frontend. Host headers and captive hostnames
 must not bypass the accepted socket’s local-interface check.
 
-## 2. Adopted PRG interaction
+## 2. Historical decision: adopt PRG interaction
 
 The OLED is a small navigable carousel rather than a menu-driven configuration
 surface.
@@ -53,7 +55,7 @@ surface.
 The prior short-tap-to-change-baud description in `InitialPlan.md` is
 superseded by this section.
 
-## 3. Adopted factory-reset semantics
+## 3. Historical decision: adopt factory-reset semantics
 
 Factory reset means recovery to a newly initialized device, including when the
 operator no longer knows the setup Wi-Fi password or has disabled the setup

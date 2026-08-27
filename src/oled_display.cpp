@@ -17,7 +17,6 @@ constexpr uint8_t kResetPin = 16;
 constexpr uint8_t kAddress = 0x3C;
 constexpr uint32_t kRefreshMs = 100;
 constexpr uint32_t kRateSampleMs = 3000;
-constexpr uint32_t kBootBrandingMs = 1000;
 constexpr uint32_t kPageTitleMs = 1000;
 constexpr size_t kPayloadRows = 7;
 constexpr uint8_t kCompactFont = 1;
@@ -68,10 +67,8 @@ struct PageDescription {
 
 Page currentPage = Page::Brand;
 bool pageInitialized = false;
-bool displayWokenFromOff = false;
 bool screenSaverActive = false;
 bool renderRequested = true;
-uint32_t bootBrandingStartedAt = 0;
 uint32_t lastUserInteraction = 0;
 bool pageTitleVisible = false;
 uint32_t pageTitleStartedAt = 0;
@@ -85,8 +82,6 @@ struct TextLine {
 struct PageObservation {
     bool unconfigured;
     bool setupApAvailable;
-    bool screenOff;
-    uint8_t displayPreference;
 };
 
 PageObservation previousObservation{};
@@ -160,19 +155,6 @@ bool setupOnlyPage(Page page) {
     return pageDescription(page).setupOnly;
 }
 
-Page preferredRuntimePage(const configuration::DeviceConfig &config) {
-    switch (static_cast<configuration::DisplayMode>(config.display)) {
-        case configuration::DisplayMode::Hex:
-            return Page::LiveHex;
-        case configuration::DisplayMode::Stats:
-            return Page::Statistics;
-        case configuration::DisplayMode::Text:
-        case configuration::DisplayMode::Off:
-            return Page::LiveText;
-    }
-    return Page::LiveText;
-}
-
 void prepareNextBaud(configuration::DeviceConfig &candidate) {
     candidate.baud = configuration::nextBaud(candidate.baud);
 }
@@ -196,13 +178,11 @@ void initializePage(
     const configuration::DeviceConfig &config,
     bool setupApAvailable,
     bool serialTrafficSeen) {
-    currentPage = preferredRuntimePage(config);
+    currentPage = Page::Brand;
     pageInitialized = true;
     previousObservation = {
         config.ssid[0] == '\0',
         setupApAvailable,
-        configuration::screenOff(config),
-        config.display,
     };
     serialTrafficRedirected = serialTrafficSeen;
 }
@@ -214,8 +194,6 @@ void normalizePage(
     const PageObservation observation = {
         config.ssid[0] == '\0',
         setupApAvailable,
-        configuration::screenOff(config),
-        config.display,
     };
     const bool becameConfigured =
         previousObservation.unconfigured && !observation.unconfigured;
@@ -225,40 +203,24 @@ void normalizePage(
         !previousObservation.setupApAvailable && observation.setupApAvailable;
     const bool setupApDisappeared =
         previousObservation.setupApAvailable && !observation.setupApAvailable;
-    const bool displayPreferenceChanged =
-        previousObservation.displayPreference != observation.displayPreference;
-    const bool screenOffChanged =
-        previousObservation.screenOff != observation.screenOff;
-
     if (becameConfigured && setupOnlyPage(currentPage)) {
-        selectPage(preferredRuntimePage(config), false);
+        selectPage(Page::Brand, false);
     } else if (becameUnconfigured && observation.setupApAvailable) {
         selectPage(
-            serialTrafficSeen ? preferredRuntimePage(config) : Page::Qr,
+            serialTrafficSeen ? Page::Brand : Page::Qr,
             false);
         serialTrafficRedirected = serialTrafficSeen;
     } else if (setupApAppeared && observation.unconfigured &&
             !serialTrafficSeen) {
         selectPage(Page::Qr, false);
     } else if (setupApDisappeared && setupOnlyPage(currentPage)) {
-        selectPage(preferredRuntimePage(config), false);
+        selectPage(Page::Brand, false);
     } else if (!serialTrafficRedirected && observation.unconfigured &&
             serialTrafficSeen) {
         serialTrafficRedirected = true;
         if (setupApAvailable && setupOnlyPage(currentPage)) {
-            selectPage(preferredRuntimePage(config), false);
+            selectPage(Page::Brand, false);
         }
-    }
-    if (displayPreferenceChanged) {
-        if (!setupOnlyPage(currentPage)) {
-            selectPage(preferredRuntimePage(config), false);
-        }
-        // Setup pages remain a deliberate transient navigation choice; the
-        // preference is recorded below without rewriting the next page click.
-    }
-    if (screenOffChanged) {
-        displayWokenFromOff = false;
-        requestRender();
     }
     previousObservation = observation;
 }
@@ -880,11 +842,7 @@ void begin() {
     digitalWrite(kResetPin, HIGH);
     Wire.begin(kSdaPin, kSclPin);
     ready = oled.begin(SSD1306_SWITCHCAPVCC, kAddress);
-    // Start the visible boot indication on the first render, after the rest
-    // of firmware startup has completed.
-    bootBrandingStartedAt = 0;
     pageInitialized = false;
-    displayWokenFromOff = false;
     screenSaverActive = false;
     renderRequested = true;
     lastUserInteraction = 0;
@@ -906,29 +864,11 @@ void handleShortClick(
     bool setupApAvailable,
     bool serialTrafficSeen) {
     const bool wakingScreenSaver = screenSaverActive;
-    const bool showingBootBranding = bootBrandingStartedAt == 0 ||
-        millis() - bootBrandingStartedAt < kBootBrandingMs;
     noteUserInteraction();
     if (!pageInitialized) initializePage(config, setupApAvailable, serialTrafficSeen);
     normalizePage(config, setupApAvailable, serialTrafficSeen);
-    if (showingBootBranding) {
-        if (configuration::screenOff(config) && !displayWokenFromOff) {
-            displayWokenFromOff = true;
-        }
-        selectPage(preferredRuntimePage(config), true);
-        return;
-    }
     if (wakingScreenSaver) {
         showCurrentPageTitle();
-        return;
-    }
-    if (configuration::screenOff(config) && !displayWokenFromOff) {
-        if (setupOnlyPage(currentPage)) {
-            selectPage(Page::LiveText, true);
-        } else {
-            showCurrentPageTitle();
-        }
-        displayWokenFromOff = true;
         return;
     }
     advancePage(setupApAvailable);
@@ -954,7 +894,6 @@ void render(
     if (!ready || (!renderRequested && now - lastRefresh < kRefreshMs)) return;
     lastRefresh = now;
     renderRequested = false;
-    if (bootBrandingStartedAt == 0) bootBrandingStartedAt = now;
     if (lastUserInteraction == 0) lastUserInteraction = now;
 
     if (lastRateSample == 0) lastRateSample = now;
@@ -968,22 +907,9 @@ void render(
     }
 
     const bool overlayVisible = activeOverlay != prg_button::Overlay::None;
-    const bool showingBootBranding = now - bootBrandingStartedAt < kBootBrandingMs;
-    if (showingBootBranding && !overlayVisible) {
-        oled.clearDisplay();
-        oled.setTextSize(kCompactFont);
-        oled.setTextColor(SSD1306_WHITE);
-        oled.setTextWrap(false);
-        pageDescription(Page::Brand).show(config, status, serialTrafficSeen);
-        oled.display();
-        displayHasContent = true;
-        return;
-    }
 
     if (!pageInitialized) initializePage(config, status.setupApActive, serialTrafficSeen);
     normalizePage(config, status.setupApActive, serialTrafficSeen);
-
-    const bool screenIsOff = configuration::screenOff(config);
 
     if (config.screenSaverSeconds == 0) {
         screenSaverActive = false;
@@ -994,8 +920,7 @@ void render(
         screenSaverActive = true;
     }
 
-    if (((screenIsOff && !displayWokenFromOff) || screenSaverActive) &&
-            !overlayVisible && !status.serialError) {
+    if (screenSaverActive && !overlayVisible && !status.serialError) {
         if (displayHasContent) {
             oled.clearDisplay();
             oled.display();

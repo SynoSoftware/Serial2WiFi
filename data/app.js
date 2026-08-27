@@ -213,7 +213,6 @@
             'framing',
             'longPressMs',
             'longPressRepeatMs',
-            'display',
             'screenSaverSeconds'
         ].forEach((field) => setFieldError(field));
     }
@@ -559,7 +558,6 @@
             tcpRemotePort: String(fieldNumber('tcpRemotePort')),
             baud: $('baud').value,
             framing: $('framing').value,
-            display: $('display').value,
             longPressMs: String(fieldNumber('longPressMs')),
             longPressRepeatMs: String(fieldNumber('longPressRepeatMs')),
             screenSaverSeconds: String(fieldNumber('screenSaverSeconds'))
@@ -922,7 +920,6 @@
             tcpRemotePort: String(Number(config.tcpRemotePort) || 0),
             baud: String(config.baud),
             framing: config.framing,
-            display: config.display,
             longPressMs: String(config.longPressMs),
             longPressRepeatMs: String(config.longPressRepeatMs),
             screenSaverSeconds: String(Number(config.screenSaverSeconds) || 0)
@@ -937,7 +934,6 @@
         $('tcpRemotePort').value = Number(values.tcpRemotePort) ? values.tcpRemotePort : '';
         $('baud').value = values.baud;
         $('framing').value = values.framing;
-        $('display').value = values.display;
         $('longPressMs').value = values.longPressMs;
         $('longPressRepeatMs').value = values.longPressRepeatMs;
         $('screenSaverSeconds').value = Number(values.screenSaverSeconds) ? values.screenSaverSeconds : '';
@@ -1153,7 +1149,6 @@
             tcpRemotePort: values.tcpRemotePort,
             baud: values.baud,
             framing: values.framing,
-            display: values.display,
             longPressMs: values.longPressMs,
             longPressRepeatMs: values.longPressRepeatMs,
             screenSaverSeconds: values.screenSaverSeconds
@@ -1854,7 +1849,6 @@
             'framing',
             'longPressMs',
             'longPressRepeatMs',
-            'display',
             'screenSaverSeconds'
         ].forEach((id) => {
             $(id).addEventListener('input', () => {

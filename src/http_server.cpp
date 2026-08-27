@@ -91,11 +91,6 @@ const char *connectionName(network_transport::ConnectionState state) {
     return "disabled";
 }
 
-const char *displayName(const configuration::DeviceConfig &config) {
-    if (configuration::screenOff(config)) return "off";
-    return configuration::displayModeName(static_cast<configuration::DisplayMode>(config.display));
-}
-
 bool fromSetupAp() {
     return wifi_access::requestFromSetupAp(server.client());
 }
@@ -408,7 +403,6 @@ void handleConfigGet() {
             static_cast<configuration::WifiSecurity>(config.wifiSecurity))) + "\"";
     body += ",\"wifiPasswordSaved\":" + String(config.wifiPassword[0] != '\0' ? "true" : "false");
     appendTcpAndSerialConfiguration(body, config);
-    body += ",\"display\":\"" + String(displayName(config)) + "\"";
     body += ",\"longPressMs\":" + String(config.longPressMs);
     body += ",\"longPressRepeatMs\":" + String(config.longPressRepeatMs);
     body += ",\"screenSaverSeconds\":" + String(config.screenSaverSeconds);
@@ -433,7 +427,6 @@ bool completeConfigurationRequest() {
         "tcpRemotePort",
         "baud",
         "framing",
-        "display",
         "longPressMs",
         "longPressRepeatMs",
         "screenSaverSeconds",
@@ -454,8 +447,6 @@ void sendValidationError(configuration::ValidationError error) {
             return configError("baud", "unsupported_baud");
         case configuration::ValidationError::Framing:
             return configError("framing", "invalid_framing");
-        case configuration::ValidationError::Display:
-            return configError("display", "invalid_display");
         case configuration::ValidationError::WifiSsid:
             return configError("ssid", "too_long");
         case configuration::ValidationError::WifiSecurity:
@@ -471,7 +462,7 @@ void sendValidationError(configuration::ValidationError error) {
         case configuration::ValidationError::TcpRemotePort:
             return configError("tcpRemotePort", "invalid_port");
         case configuration::ValidationError::UiPreferences:
-            return configError("display", "invalid_display_preferences");
+            return configError("configuration", "invalid_ui_preferences");
         case configuration::ValidationError::LongPress:
             return configError("longPressMs", "invalid_timeout");
         case configuration::ValidationError::LongPressRepeat:
@@ -502,7 +493,6 @@ void handleConfigPost() {
     const String tcpRemotePort = server.arg("tcpRemotePort");
     const String baud = server.arg("baud");
     const String framing = server.arg("framing");
-    const String display = server.arg("display");
     const String longPress = server.arg("longPressMs");
     const String longPressRepeat = server.arg("longPressRepeatMs");
     const String screenSaver = server.arg("screenSaverSeconds");
@@ -582,25 +572,6 @@ void handleConfigPost() {
         return configError("screenSaverSeconds", "invalid_timeout");
     }
     candidate.screenSaverSeconds = screenSaverNumber;
-    configuration::DisplayMode displayValue;
-    if (!configuration::displayModeFromName(display.c_str(), displayValue)) {
-        return configError("display", "invalid_display");
-    }
-    if (displayValue == configuration::DisplayMode::Off) {
-        if (candidate.display == static_cast<uint8_t>(configuration::DisplayMode::Off)) {
-            candidate.display = static_cast<uint8_t>(configuration::liveDisplayMode(candidate));
-        }
-        configuration::setScreenOff(candidate, true);
-    } else {
-        candidate.display = static_cast<uint8_t>(displayValue);
-        configuration::setScreenOff(candidate, false);
-        if (displayValue == configuration::DisplayMode::Text) {
-            configuration::setLiveView(candidate, configuration::LiveView::Text);
-        } else if (displayValue == configuration::DisplayMode::Hex) {
-            configuration::setLiveView(candidate, configuration::LiveView::Hex);
-        }
-    }
-
     const configuration::ValidationError validation = configuration::validationError(candidate);
     if (validation != configuration::ValidationError::None) {
         return sendValidationError(validation);

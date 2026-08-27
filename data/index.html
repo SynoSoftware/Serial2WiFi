@@ -886,62 +886,36 @@
                                 </section>
                                 <section
                                     class="device-group"
-                                    aria-labelledby="displayTitle"
+                                    aria-labelledby="screenSaverTitle"
                                 >
-                                    <h3 id="displayTitle">Display</h3>
-                                    <div class="two-field-grid">
-                                        <div class="field">
-                                            <label for="display">Mode</label>
-                                            <select
-                                                id="display"
-                                                aria-describedby="displayError"
-                                            >
-                                                <option value="text">
-                                                    Live text
-                                                </option>
-                                                <option value="hex">
-                                                    Live hex
-                                                </option>
-                                                <option value="stats">
-                                                    Statistics
-                                                </option>
-                                                <option value="off">Off</option>
-                                            </select>
-                                            <p
-                                                id="displayError"
-                                                class="field-error"
-                                                role="alert"
-                                                hidden
-                                            ></p>
+                                    <h3 id="screenSaverTitle">Screen saver</h3>
+                                    <div class="field">
+                                        <label for="screenSaverSeconds"
+                                            >Turn display off after</label
+                                        >
+                                        <div class="unit-control">
+                                            <input
+                                                id="screenSaverSeconds"
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                inputmode="numeric"
+                                                placeholder="Off"
+                                                aria-describedby="screenSaverHelp screenSaverSecondsError"
+                                            /><span>sec</span>
                                         </div>
-                                        <div class="field">
-                                            <label for="screenSaverSeconds"
-                                                >Screen saver</label
-                                            >
-                                            <div class="unit-control">
-                                                <input
-                                                    id="screenSaverSeconds"
-                                                    type="number"
-                                                    min="0"
-                                                    step="1"
-                                                    inputmode="numeric"
-                                                    placeholder="Off"
-                                                    aria-describedby="screenSaverHelp screenSaverSecondsError"
-                                                /><span>sec</span>
-                                            </div>
-                                            <p
-                                                id="screenSaverHelp"
-                                                class="field-help"
-                                            >
-                                                Off disables the screen saver.
-                                            </p>
-                                            <p
-                                                id="screenSaverSecondsError"
-                                                class="field-error"
-                                                role="alert"
-                                                hidden
-                                            ></p>
-                                        </div>
+                                        <p
+                                            id="screenSaverHelp"
+                                            class="field-help"
+                                        >
+                                            Off disables the screen saver.
+                                        </p>
+                                        <p
+                                            id="screenSaverSecondsError"
+                                            class="field-error"
+                                            role="alert"
+                                            hidden
+                                        ></p>
                                     </div>
                                 </section>
                             </div>

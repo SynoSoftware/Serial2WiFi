@@ -17,11 +17,8 @@ constexpr uint32_t kSupportedBauds[] = {
         2400, 4800, 9600, 19200, 38400, 57600,
         115200, 230400, 460800, 921600, 1000000};
 constexpr size_t kSupportedBaudCount = sizeof(kSupportedBauds) / sizeof(kSupportedBauds[0]);
-constexpr uint8_t kLiveViewMask = 0x01;
 constexpr uint8_t kStatusBarMask = 0x06;
-constexpr uint8_t kScreenOffMask = 0x08;
-constexpr uint8_t kLegacySetupApEnabledMask = 0x10;
-constexpr uint8_t kUiPreferenceMask = kLiveViewMask | kStatusBarMask | kScreenOffMask;
+constexpr uint8_t kUiPreferenceMask = kStatusBarMask;
 
 size_t boundedLength(const char *value, size_t capacity) {
     return strnlen(value, capacity);
@@ -34,10 +31,11 @@ bool readStored(DeviceConfig &config) {
     const size_t read = length == sizeof(stored) ?
         preferences.getBytes("cfg", &stored, sizeof(stored)) : 0;
     preferences.end();
-    // Older firmware persisted the setup-AP override inside uiPreferences.
-    // That control is now gone, so silently drop the legacy bit on load.
+    // Older firmware persisted setup-AP and display-off controls in these
+    // bits. Neither control exists now, so loading drops them.
     stored.uiPreferences = static_cast<uint8_t>(
-        stored.uiPreferences & ~kLegacySetupApEnabledMask);
+        stored.uiPreferences & kUiPreferenceMask);
+    stored.reserved = 0;
     if (read != sizeof(stored) || stored.schema != kSchema ||
             validationError(stored) != ValidationError::None) return false;
     config = stored;
@@ -59,7 +57,7 @@ DeviceConfig factoryDefaults() {
     config.schema = kSchema;
     config.baud = kDefaultBaud;
     config.framing = static_cast<uint8_t>(Framing::EightN1);
-    config.display = static_cast<uint8_t>(DisplayMode::Text);
+    config.reserved = 0;
     config.wifiSecurity = static_cast<uint8_t>(WifiSecurity::Unset);
     config.uiPreferences = 0;
     config.tcpMode = static_cast<uint8_t>(TcpMode::Listen);
@@ -140,34 +138,6 @@ uint32_t nextBaud(uint32_t current) {
     return kSupportedBauds[0];
 }
 
-const char *displayModeName(DisplayMode mode) {
-    switch (mode) {
-        case DisplayMode::Text: return "text";
-        case DisplayMode::Hex: return "hex";
-        case DisplayMode::Stats: return "stats";
-        case DisplayMode::Off: return "off";
-    }
-    return "text";
-}
-
-bool displayModeFromName(const char *name, DisplayMode &mode) {
-    if (strcmp(name, "text") == 0) mode = DisplayMode::Text;
-    else if (strcmp(name, "hex") == 0) mode = DisplayMode::Hex;
-    else if (strcmp(name, "stats") == 0) mode = DisplayMode::Stats;
-    else if (strcmp(name, "off") == 0) mode = DisplayMode::Off;
-    else return false;
-    return true;
-}
-
-LiveView liveView(const DeviceConfig &config) {
-    return (config.uiPreferences & kLiveViewMask) == 0 ? LiveView::Text : LiveView::Hex;
-}
-
-void setLiveView(DeviceConfig &config, LiveView view) {
-    config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kLiveViewMask);
-    if (view == LiveView::Hex) config.uiPreferences |= kLiveViewMask;
-}
-
 StatusBar statusBar(const DeviceConfig &config) {
     return static_cast<StatusBar>((config.uiPreferences & kStatusBarMask) >> 1);
 }
@@ -175,19 +145,6 @@ StatusBar statusBar(const DeviceConfig &config) {
 void setStatusBar(DeviceConfig &config, StatusBar bar) {
     config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kStatusBarMask);
     config.uiPreferences |= static_cast<uint8_t>(bar) << 1;
-}
-
-bool screenOff(const DeviceConfig &config) {
-    return (config.uiPreferences & kScreenOffMask) != 0;
-}
-
-void setScreenOff(DeviceConfig &config, bool off) {
-    if (off) config.uiPreferences |= kScreenOffMask;
-    else config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kScreenOffMask);
-}
-
-DisplayMode liveDisplayMode(const DeviceConfig &config) {
-    return liveView(config) == LiveView::Hex ? DisplayMode::Hex : DisplayMode::Text;
 }
 
 const char *tcpModeName(TcpMode mode) {
@@ -210,9 +167,6 @@ ValidationError validationError(const DeviceConfig &candidate) {
     if (!supportedBaud(candidate.baud)) return ValidationError::Baud;
     if (candidate.framing > static_cast<uint8_t>(Framing::SevenO1)) {
         return ValidationError::Framing;
-    }
-    if (candidate.display > static_cast<uint8_t>(DisplayMode::Off)) {
-        return ValidationError::Display;
     }
     if (candidate.tcpMode > static_cast<uint8_t>(TcpMode::Connect)) {
         return ValidationError::TcpMode;

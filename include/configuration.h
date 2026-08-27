@@ -25,18 +25,6 @@ enum class Framing : uint8_t {
     SevenO1,
 };
 
-enum class DisplayMode : uint8_t {
-    Text = 0,
-    Hex,
-    Stats,
-    Off,
-};
-
-enum class LiveView : uint8_t {
-    Text = 0,
-    Hex,
-};
-
 enum class StatusBar : uint8_t {
     Auto = 0,
     Serial,
@@ -60,7 +48,9 @@ struct DeviceConfig {
     uint16_t schema;
     uint32_t baud;
     uint8_t framing;
-    uint8_t display;
+    // Retains the existing NVS record layout after display mode removal so
+    // firmware upgrades preserve the user's network and serial settings.
+    uint8_t reserved;
     uint8_t wifiSecurity;
     uint8_t uiPreferences;
     char ssid[33];
@@ -82,7 +72,6 @@ enum class ValidationError : uint8_t {
     Schema,
     Baud,
     Framing,
-    Display,
     WifiSsid,
     WifiSecurity,
     WifiPassword,
@@ -116,15 +105,7 @@ uint32_t serialConfig(Framing framing);
 bool supportedBaud(uint32_t baud);
 uint32_t nextBaud(uint32_t current);
 
-const char *displayModeName(DisplayMode mode);
-bool displayModeFromName(const char *name, DisplayMode &mode);
-
-    LiveView liveView(const DeviceConfig &config);
-    void setLiveView(DeviceConfig &config, LiveView view);
-    StatusBar statusBar(const DeviceConfig &config);
-    void setStatusBar(DeviceConfig &config, StatusBar bar);
-    bool screenOff(const DeviceConfig &config);
-    void setScreenOff(DeviceConfig &config, bool off);
-    DisplayMode liveDisplayMode(const DeviceConfig &config);
+StatusBar statusBar(const DeviceConfig &config);
+void setStatusBar(DeviceConfig &config, StatusBar bar);
 
 }  // namespace configuration
