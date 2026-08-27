@@ -13,33 +13,93 @@ constexpr uint64_t kResetWarningStartUs = 5000000;
 constexpr uint64_t kFactoryResetUs = 10000000;
 constexpr uint32_t kOverlayMs = 1000;
 
-bool rawState = true;
-bool stableState = true;
-enum class GestureState : uint8_t {
-    WaitingForPress,
-    Pressed,
+enum class Phase : uint8_t {
+    Idle,
+    Pressing,
+    Repeating,
+    ResetWarning,
+    ResetFired,
 };
-GestureState gestureState = GestureState::WaitingForPress;
-uint32_t changedAt = 0;
+
+bool rawPressed = false;
+bool pressed = false;
+uint32_t pressedChangedAt = 0;
+Phase phase = Phase::Idle;
+Event pending = Event::None;
 uint64_t pressedAtUs = 0;
-bool resetEligibleAtPress = false;
-bool resetAttempted = false;
+uint64_t pressLongPressUs = 0;
 bool resetSucceeded = false;
-bool singleClick = false;
-HoldEvent holdEvent{};
-bool holdEventPending = false;
-bool holdStarted = false;
-uint32_t nextHoldEventAt = 0;
+uint32_t nextRepeatAt = 0;
 uint32_t longPressMs = configuration::kDefaultLongPressMs;
 uint32_t longPressRepeatMs = configuration::kDefaultLongPressRepeatMs;
-bool factoryResetRequest = false;
-bool reboot = false;
-Overlay active = Overlay::None;
+Overlay result = Overlay::None;
 uint32_t overlayStartedAt = 0;
 
-void clearReleaseOverlays() {
-    if (active == Overlay::ResetWarning) {
-        active = Overlay::None;
+uint64_t heldUs() {
+    // OLED and network work can vary between loop iterations; gesture timing
+    // must remain wall-clock based instead of depending on loop frequency.
+    return static_cast<uint64_t>(esp_timer_get_time()) - pressedAtUs;
+}
+
+Phase phaseFor(uint64_t heldForUs) {
+    // Longest threshold first. Any other order lets an earlier branch match a
+    // longer hold, so the reset thresholds would never be reached.
+    if (heldForUs >= kFactoryResetUs) return Phase::ResetFired;
+    if (heldForUs >= kResetWarningStartUs) return Phase::ResetWarning;
+    if (heldForUs >= pressLongPressUs) return Phase::Repeating;
+    return Phase::Pressing;
+}
+
+void expireSaveFailedOverlay() {
+    if (result == Overlay::SaveFailed && millis() - overlayStartedAt >= kOverlayMs) {
+        result = Overlay::None;
+    }
+}
+
+void updateDebounce() {
+    const uint32_t now = millis();
+    const bool raw = digitalRead(kPin) == LOW;
+    if (raw != rawPressed) {
+        rawPressed = raw;
+        pressedChangedAt = now;
+    }
+    if (rawPressed != pressed && now - pressedChangedAt >= kDebounceMs) {
+        pressed = rawPressed;
+    }
+}
+
+void beginPress() {
+    phase = Phase::Pressing;
+    pressedAtUs = static_cast<uint64_t>(esp_timer_get_time());
+    resetSucceeded = false;
+    // Latch the threshold for this press. The web UI can change longPressMs
+    // from the same loop iteration, and moving the boundary under a gesture
+    // already in progress would regress its phase and release a hold as a
+    // click.
+    pressLongPressUs = static_cast<uint64_t>(longPressMs) * 1000ULL;
+}
+
+void enterPhase(Phase next) {
+    phase = next;
+    if (next == Phase::Repeating) {
+        pending = Event::HoldStarted;
+        nextRepeatAt = millis() + longPressRepeatMs;
+    } else if (next == Phase::ResetFired) {
+        pending = Event::ResetRequested;
+    }
+}
+
+void endPress() {
+    if (phase == Phase::Idle) return;
+    const Phase ended = phase;
+    phase = Phase::Idle;
+    if (result == Overlay::ResetComplete || result == Overlay::ResetFailed) {
+        result = Overlay::None;
+    }
+    if (ended == Phase::Pressing) {
+        pending = Event::Click;
+    } else if (ended == Phase::ResetFired && resetSucceeded) {
+        pending = Event::RestartRequested;
     }
 }
 
@@ -47,10 +107,12 @@ void clearReleaseOverlays() {
 
 void begin(uint32_t configuredLongPressMs, uint32_t configuredLongPressRepeatMs) {
     pinMode(kPin, INPUT_PULLUP);
-    rawState = digitalRead(kPin) != LOW;
-    stableState = rawState;
-    gestureState = GestureState::WaitingForPress;
-    changedAt = millis();
+    rawPressed = digitalRead(kPin) == LOW;
+    pressed = rawPressed;
+    pressedChangedAt = millis();
+    phase = Phase::Idle;
+    pending = Event::None;
+    result = Overlay::None;
     longPressMs = configuredLongPressMs;
     longPressRepeatMs = configuredLongPressRepeatMs;
 }
@@ -63,133 +125,57 @@ void setLongPressRepeatMs(uint32_t configuredLongPressRepeatMs) {
     longPressRepeatMs = configuredLongPressRepeatMs;
 }
 
-bool isPressed() {
-    return gestureState == GestureState::Pressed;
-}
-
 void service() {
-    const uint32_t now = millis();
-    // OLED and network work can vary between loop iterations; gesture timing
-    // must remain wall-clock based instead of depending on loop frequency.
-    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
-    const bool raw = digitalRead(kPin) != LOW;
+    // Expire first: the press handling below returns early on the release and
+    // idle paths, and the overlay must still expire on both.
+    expireSaveFailedOverlay();
+    updateDebounce();
+    if (!pressed) { endPress(); return; }
+    if (phase == Phase::Idle) { beginPress(); return; }
 
-    if (raw != rawState) {
-        rawState = raw;
-        changedAt = now;
+    const Phase next = phaseFor(heldUs());
+    if (next != phase) { enterPhase(next); return; }
+    if (phase == Phase::Repeating &&
+            static_cast<int32_t>(millis() - nextRepeatAt) >= 0) {
+        pending = Event::HoldRepeated;
+        nextRepeatAt = millis() + longPressRepeatMs;
     }
-
-    if (rawState != stableState && now - changedAt >= kDebounceMs) {
-        stableState = rawState;
-        if (!stableState) {
-            if (gestureState == GestureState::WaitingForPress) {
-                pressedAtUs = nowUs;
-                // Factory reset is an emergency action available throughout
-                // runtime. The ten-second threshold below is the accidental-
-                // reset guard; it is not a startup-only availability window.
-                resetEligibleAtPress = true;
-                resetAttempted = false;
-                resetSucceeded = false;
-                holdStarted = false;
-                nextHoldEventAt = 0;
-                gestureState = GestureState::Pressed;
-            }
-        } else {
-            if (gestureState == GestureState::Pressed) {
-                const uint64_t heldForUs = nowUs - pressedAtUs;
-                if (!resetAttempted && !holdStarted &&
-                        heldForUs < static_cast<uint64_t>(longPressMs) * 1000ULL) {
-                    // A released, debounced click is the common operation. Emit
-                    // it now; waiting for a possible second click makes page
-                    // cycling feel broken.
-                    singleClick = true;
-                }
-                if (resetAttempted && resetSucceeded) reboot = true;
-            }
-            gestureState = GestureState::WaitingForPress;
-            clearReleaseOverlays();
-            if (active == Overlay::ResetComplete || active == Overlay::ResetFailed) active = Overlay::None;
-        }
-    }
-
-    if (gestureState == GestureState::Pressed && !resetAttempted) {
-        const uint64_t heldForUs = nowUs - pressedAtUs;
-        if (heldForUs >= kFactoryResetUs) {
-            if (resetEligibleAtPress) {
-                resetAttempted = true;
-                factoryResetRequest = true;
-            }
-        } else if (resetEligibleAtPress && heldForUs >= kResetWarningStartUs) {
-            active = Overlay::ResetWarning;
-        } else if (!holdStarted &&
-                heldForUs >= static_cast<uint64_t>(longPressMs) * 1000ULL) {
-            holdStarted = true;
-            holdEvent.resetEligible = resetEligibleAtPress;
-            holdEvent.first = true;
-            holdEventPending = true;
-            nextHoldEventAt = now + longPressRepeatMs;
-        } else if (holdStarted && heldForUs < kResetWarningStartUs &&
-                static_cast<int32_t>(now - nextHoldEventAt) >= 0) {
-            holdEvent.resetEligible = resetEligibleAtPress;
-            holdEvent.first = false;
-            holdEventPending = true;
-            nextHoldEventAt = now + longPressRepeatMs;
-        }
-    }
-
-    if (active == Overlay::SaveFailed &&
-            now - overlayStartedAt >= kOverlayMs) {
-        active = Overlay::None;
-    }
-
 }
 
-bool takeSingleClick() {
-    const bool result = singleClick;
-    singleClick = false;
-    return result;
-}
-
-bool takeHold(HoldEvent &event) {
-    if (!holdEventPending) return false;
-    event = holdEvent;
-    holdEventPending = false;
-    return true;
-}
-
-bool takeFactoryResetRequest() {
-    const bool result = factoryResetRequest;
-    factoryResetRequest = false;
-    return result;
+Event takeEvent() {
+    const Event event = pending;
+    pending = Event::None;
+    return event;
 }
 
 void reportSaveFailed() {
-    active = Overlay::SaveFailed;
+    result = Overlay::SaveFailed;
     overlayStartedAt = millis();
 }
 
 void reportFactoryReset(bool succeeded) {
     resetSucceeded = succeeded;
-    active = succeeded ? Overlay::ResetComplete : Overlay::ResetFailed;
+    result = succeeded ? Overlay::ResetComplete : Overlay::ResetFailed;
     overlayStartedAt = millis();
 }
 
-bool restartPending() {
-    if (!reboot || digitalRead(kPin) == LOW) return false;
-    reboot = false;
-    return true;
-}
-
 Overlay overlay() {
-    return active;
+    // The live phase outranks a stored result. overlay() and resetCountdown()
+    // are read in the same frame and must agree, and a SAVE FAILED raised just
+    // before the warning would otherwise hide a running countdown.
+    if (phase == Phase::ResetWarning) return Overlay::ResetWarning;
+    return result;
 }
 
 uint32_t resetCountdown() {
-    if (gestureState != GestureState::Pressed || !resetEligibleAtPress) return 0;
-    const uint64_t heldForUs = static_cast<uint64_t>(esp_timer_get_time()) - pressedAtUs;
-    if (heldForUs < kResetWarningStartUs) return 0;
-    const uint64_t clamped = min(heldForUs, kFactoryResetUs);
-    return static_cast<uint32_t>((kFactoryResetUs - clamped + 999999) / 1000000);
+    if (phase != Phase::ResetWarning) return 0;
+    // service() is the only writer of phase, and this runs later in the same
+    // loop pass, so the press can already have crossed the reset threshold
+    // while phase still reads ResetWarning. Without this the subtraction
+    // below underflows.
+    const uint64_t heldForUs = heldUs();
+    if (heldForUs >= kFactoryResetUs) return 0;
+    return static_cast<uint32_t>((kFactoryResetUs - heldForUs + 999999) / 1000000);
 }
 
 }  // namespace prg_button

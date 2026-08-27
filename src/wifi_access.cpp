@@ -163,6 +163,18 @@ void startAp() {
     // unused STA interface in that recovery state gives it no product value
     // and makes the setup radio depend on concurrent-mode behavior.
     WiFi.mode(stationIsConfigured ? WIFI_AP_STA : WIFI_AP);
+    // Android abandons captive detection before it sends any HTTP probe when
+    // the probe hostname resolves to an RFC1918 or link-local address. See
+    // NetworkMonitor.hasPrivateIpAddress: 10/8, 172.16/12, 192.168/16 and
+    // 169.254/16. The Arduino default AP address sits inside that test, so it
+    // loses every Android client no matter what http_server answers. RFC 6598
+    // Shared Address Space is outside the test and is reserved for equipment
+    // that must not occupy RFC1918. This call is the one place the setup AP
+    // address is decided; everything else reads it back from the driver.
+    // Never move this AP onto a private range.
+    const IPAddress apAddress(100, 64, 0, 1);
+    if (!WiFi.softAPConfig(apAddress, apAddress, IPAddress(255, 255, 255, 0)))
+        return;
     if (!WiFi.softAP(deviceName, devicePassword, kSetupApChannel, 0, 4))
         return;
     apIsActive = WiFi.AP.started();
@@ -323,6 +335,7 @@ Snapshot snapshot() {
     strncpy(result.stationSsid, stationSsid, sizeof(result.stationSsid) - 1);
     strncpy(result.setupSsid, deviceName, sizeof(result.setupSsid) - 1);
     strncpy(result.setupPassword, devicePassword, sizeof(result.setupPassword) - 1);
+    result.setupIp = WiFi.softAPIP();
     result.stationIp = WiFi.localIP();
     return result;
 }

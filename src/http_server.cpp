@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 
 #include "browser_terminal.h"
+#include "build_number.h"
 #include "management_auth.h"
 #include "network_transport.h"
 #include "serial_port.h"
@@ -20,6 +21,9 @@ namespace {
 WebServer server(configuration::kHttpPort);
 configuration::ApplyCallback applyConfiguration = nullptr;
 char csrfToken[33]{};
+// The frontend build number is packed into the filesystem image, so it is the
+// image's own property and cannot be a compile-time constant of the firmware.
+char frontendBuildNumber[14]{};
 bool filesystemReady = false;
 
 const char *securityName(configuration::WifiSecurity security) {
@@ -91,6 +95,25 @@ const char *connectionName(network_transport::ConnectionState state) {
         case network_transport::ConnectionState::Failure: return "failure";
     }
     return "disabled";
+}
+
+// An image built without the stamp leaves the number empty rather than
+// reporting a value the filesystem cannot support.
+void loadFrontendBuildNumber() {
+    if (!filesystemReady) return;
+    File file = LittleFS.open("/build-stamp.txt", "r");
+    if (!file) return;
+    const size_t length =
+        file.readBytes(frontendBuildNumber, sizeof(frontendBuildNumber) - 1);
+    file.close();
+    frontendBuildNumber[length] = '\0';
+    for (size_t index = 0; index < length; ++index) {
+        const char character = frontendBuildNumber[index];
+        if (character == '\r' || character == '\n') {
+            frontendBuildNumber[index] = '\0';
+            break;
+        }
+    }
 }
 
 bool fromSetupAp() {
@@ -282,6 +305,8 @@ void handleStatus() {
     body += ",\"authenticated\":" + String(authenticated ? "true" : "false");
     body += ",\"authState\":\"" + String(authenticationState(authenticated)) + "\"";
     body += ",\"terminalAvailable\":" + String(fromSetupAp() ? "true" : "false");
+    body += ",\"firmwareBuild\":\"" + String(build_number::kFirmware) + "\"";
+    body += ",\"frontendBuild\":\"" + escaped(frontendBuildNumber) + "\"";
     body += ",\"wifiConfigured\":" + String(wifi.stationConfigured ? "true" : "false");
     body += ",\"wifiConnected\":" + String(wifi.stationConnected ? "true" : "false");
     body += ",\"wifiApActive\":" + String(wifi.setupApActive ? "true" : "false");
@@ -463,8 +488,6 @@ void sendValidationError(configuration::ValidationError error) {
             return configError("tcpRemoteHost", "invalid_host");
         case configuration::ValidationError::TcpRemotePort:
             return configError("tcpRemotePort", "invalid_port");
-        case configuration::ValidationError::UiPreferences:
-            return configError("configuration", "invalid_ui_preferences");
         case configuration::ValidationError::LongPress:
             return configError("longPressMs", "invalid_timeout");
         case configuration::ValidationError::LongPressRepeat:
@@ -622,6 +645,13 @@ void handleScanGet() {
 void handleCaptiveProbe() {
     if (!fromSetupAp()) return server.send(404, "text/plain", "Not found");
 
+    // Never answer a probe with 204 or any other success code, however
+    // tempting it looks for clearing the phone's sign-in prompt. Success
+    // claims this network carries the Internet, which this device never does.
+    // The phone would then treat the setup AP as a working default route and
+    // send real traffic into a dead end. Redirecting is the truthful answer
+    // for as long as the phone stays here; the phone clears the prompt itself
+    // when it leaves the AP.
     // A probe is sent to a public hostname which DNS has mapped to this AP.
     // An absolute local URL is required because some clients do not resolve
     // a relative Location against the probe hostname before opening the page.
@@ -723,6 +753,7 @@ void begin(configuration::ApplyCallback callback) {
     snprintf(csrfToken, sizeof(csrfToken), "%08lX%08lX",
         static_cast<unsigned long>(tokenA), static_cast<unsigned long>(tokenB));
     filesystemReady = LittleFS.begin(false);
+    loadFrontendBuildNumber();
     const char *requestHeaders[] = {
         "X-CSRF-Token",
         "Upgrade",

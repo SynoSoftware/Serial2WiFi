@@ -17,8 +17,6 @@ constexpr uint32_t kSupportedBauds[] = {
         2400, 4800, 9600, 19200, 38400, 57600,
         115200, 230400, 460800, 921600, 1000000};
 constexpr size_t kSupportedBaudCount = sizeof(kSupportedBauds) / sizeof(kSupportedBauds[0]);
-constexpr uint8_t kStatusBarMask = 0x06;
-constexpr uint8_t kUiPreferenceMask = kStatusBarMask;
 
 size_t boundedLength(const char *value, size_t capacity) {
     return strnlen(value, capacity);
@@ -31,11 +29,11 @@ bool readStored(DeviceConfig &config) {
     const size_t read = length == sizeof(stored) ?
         preferences.getBytes("cfg", &stored, sizeof(stored)) : 0;
     preferences.end();
-    // Older firmware persisted setup-AP and display-off controls in these
-    // bits. Neither control exists now, so loading drops them.
-    stored.uiPreferences = static_cast<uint8_t>(
-        stored.uiPreferences & kUiPreferenceMask);
+    // Older firmware persisted setup-AP, display-off and status-bar controls
+    // in these bytes. None of those controls exists now, so loading neutralizes
+    // them before validation instead of rejecting the record over them.
     stored.reserved = 0;
+    stored.reserved2 = 0;
     if (read != sizeof(stored) || stored.schema != kSchema ||
             validationError(stored) != ValidationError::None) return false;
     config = stored;
@@ -59,7 +57,7 @@ DeviceConfig factoryDefaults() {
     config.framing = static_cast<uint8_t>(Framing::EightN1);
     config.reserved = 0;
     config.wifiSecurity = static_cast<uint8_t>(WifiSecurity::Unset);
-    config.uiPreferences = 0;
+    config.reserved2 = 0;
     config.tcpMode = static_cast<uint8_t>(TcpMode::Listen);
     config.tcpListenPort = 0;
     config.tcpRemoteHost[0] = '\0';
@@ -138,15 +136,6 @@ uint32_t nextBaud(uint32_t current) {
     return kSupportedBauds[0];
 }
 
-StatusBar statusBar(const DeviceConfig &config) {
-    return static_cast<StatusBar>((config.uiPreferences & kStatusBarMask) >> 1);
-}
-
-void setStatusBar(DeviceConfig &config, StatusBar bar) {
-    config.uiPreferences = static_cast<uint8_t>(config.uiPreferences & ~kStatusBarMask);
-    config.uiPreferences |= static_cast<uint8_t>(bar) << 1;
-}
-
 const char *tcpModeName(TcpMode mode) {
     switch (mode) {
         case TcpMode::Listen: return "listen";
@@ -182,10 +171,6 @@ ValidationError validationError(const DeviceConfig &candidate) {
     if (candidate.screenSaverSeconds != 0 &&
             candidate.screenSaverSeconds < kMinimumScreenSaverSeconds) {
         return ValidationError::ScreenSaver;
-    }
-    if ((candidate.uiPreferences & ~kUiPreferenceMask) != 0 ||
-            static_cast<uint8_t>(statusBar(candidate)) > static_cast<uint8_t>(StatusBar::Network)) {
-        return ValidationError::UiPreferences;
     }
     if (candidate.wifiSecurity > static_cast<uint8_t>(WifiSecurity::Secured)) {
         return ValidationError::WifiSecurity;

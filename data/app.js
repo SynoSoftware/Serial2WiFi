@@ -34,12 +34,18 @@
     let wifiMode = 'summary';
     let wifiSnapshot = null;
     let passwordEditing = false;
+    // Cancel steps back to the network list only when the list is where this
+    // edit started. Changing the password of the saved network does not pass
+    // through it, the setup AP has no list at all, and a failed save can drop
+    // straight into a field. Derived on entry so no path can leave it stale.
+    let networkEditFromChooser = false;
     let scanTimer = null;
 
     let terminalWanted = false;
     let terminalSocket = null;
     let terminalReconnectTimer = null;
     let terminalReconnectDelayMs = 1000;
+    let terminalRetryAt = 0;
     let terminalRenderPending = false;
     let terminalPaused = false;
     let terminalClosing = false;
@@ -136,6 +142,58 @@
         if (focus) {
             tab.focus();
         }
+    }
+
+    function storedTheme() {
+        try {
+            return localStorage.getItem('theme');
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function applyTheme(theme) {
+        document.documentElement.dataset.theme = theme;
+        const dark = theme === 'dark';
+        // The button offers the other theme, so it carries that theme's icon.
+        $('themeIcon').setAttribute('href', dark ? '#icon-sun' : '#icon-moon');
+        $('themeToggle').setAttribute(
+            'aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+    }
+
+    function resolveTheme() {
+        // Mirrors the inline script in the document head, which has to run
+        // before the first paint and so cannot call in here. This copy also
+        // repairs the theme if that script was blocked: without it a missing
+        // attribute would pin a dark-system reader to the light palette.
+        const stored = storedTheme();
+        if (stored === 'dark' || stored === 'light') return stored;
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function initializeTheme() {
+        const current = document.documentElement.dataset.theme;
+        applyTheme(current === 'dark' || current === 'light' ? current : resolveTheme());
+        $('themeToggle').addEventListener('click', () => {
+            const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+            try {
+                localStorage.setItem('theme', next);
+            } catch (error) {
+                // A browser that refuses storage still switches for this visit.
+            }
+            applyTheme(next);
+        });
+        // Until a choice is made the page follows the system, including a
+        // change made while it is open. A terminal session can stay open for
+        // hours, long enough to cross the system's own light/dark switch.
+        const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+        // Older WebViews carry MediaQueryList without addEventListener. This
+        // runs before every other initializer, so an exception here would take
+        // the whole page down over a convenience.
+        if (typeof systemTheme.addEventListener !== 'function') return;
+        systemTheme.addEventListener('change', (event) => {
+            if (storedTheme() === null) applyTheme(event.matches ? 'dark' : 'light');
+        });
     }
 
     function initializeTabs() {
@@ -385,10 +443,15 @@
         $('navigation').hidden = !authenticated;
         $('setupTab').hidden = !authenticated;
         $('statusTab').hidden = !authenticated;
+        // The Status tab titles this view once it exists. Signed out there are
+        // no tabs, so the heading is the only title the page has.
+        $('bridgeTitle').hidden = authenticated;
         $('terminalTab').hidden = !(authenticated && auth.terminalAvailable);
         $('securitySection').hidden = !authenticated;
+        $('buildGroup').hidden = !authenticated;
         $('chooseNetwork').hidden = !auth.terminalAvailable;
-        $('configureButton').hidden = authenticated;
+        $('loginButton').hidden = authenticated;
+        $('logoutButton').hidden = !authenticated;
         setStatusPanelSemantics(authenticated);
 
         if (!authenticated) {
@@ -774,6 +837,9 @@
     }
 
     function setWifiMode(mode) {
+        if (mode === 'credentials' || mode === 'manual') {
+            networkEditFromChooser = wifiMode === 'chooser';
+        }
         wifiMode = mode;
         // Scan polling belongs to the chooser; it must not outlive it.
         if (mode !== 'chooser') stopScanPolling();
@@ -782,8 +848,11 @@
         $('wifiCredentials').hidden = mode !== 'credentials';
         $('manualNetworkFields').hidden = mode !== 'manual';
         $('wifiCredentialsName').textContent = $('ssid').value || 'Network';
-        $('backToNetworks').hidden = !auth.terminalAvailable;
-        $('backToNetworksFromManual').hidden = !auth.terminalAvailable;
+        // One footer serves every editor step; each step shows the actions it has.
+        const naming = mode === 'credentials' || mode === 'manual';
+        $('wifiEditor').hidden = mode === 'summary';
+        $('useNetwork').hidden = !naming;
+        if (mode !== 'chooser') $('scanAgain').hidden = true;
         renderPasswordEditor();
     }
 
@@ -823,6 +892,10 @@
     }
 
     function cancelNetworkEdit() {
+        if (networkEditFromChooser && (wifiMode === 'credentials' || wifiMode === 'manual')) {
+            returnToNetworkChooser();
+            return;
+        }
         if (wifiSnapshot) {
             restoreNetwork(wifiSnapshot);
         }
@@ -870,6 +943,13 @@
         if (passwordEditing) {
             $('wifiPassword').focus();
         }
+    }
+
+    function finishNetworkEdit() {
+        setWifiMode('summary');
+        renderWifiSummary();
+        clearSaveFeedback();
+        refreshSaveState();
     }
 
     function changePassword() {
@@ -942,7 +1022,7 @@
             $('scanState').textContent = 'No networks found.';
             return;
         }
-        $('scanState').textContent = 'Choose a network';
+        $('scanState').textContent = visible.length === 1 ? '1 network found.' : visible.length + ' networks found.';
 
         visible.forEach((network) => {
             const row = document.createElement('button');
@@ -964,9 +1044,12 @@
             const meta = document.createElement('span');
             meta.className = 'network-meta';
             meta.textContent = signalText(Number(network.rssi)).replace(' signal', '');
-            if (network.secured) {
-                meta.appendChild(createIcon('lock'));
-            }
+            const lock = createIcon(network.secured ? 'lock' : 'lock-open');
+            // The two padlocks differ by a few pixels of shackle at this size,
+            // so colour carries the difference too. The label still states it,
+            // so nothing depends on colour alone.
+            lock.classList.add(network.secured ? 'network-secured' : 'network-open');
+            meta.appendChild(lock);
 
             row.append(leading, meta);
             row.addEventListener('click', () => selectNetwork(network.ssid, Boolean(network.secured)));
@@ -1375,7 +1458,7 @@
             }
         } finally {
             savePending = false;
-            $('saveText').textContent = 'Save changes';
+            $('saveText').textContent = 'Save';
             $('saveStateIcon').closest('svg').classList.remove('spin');
             refreshSaveState();
         }
@@ -1582,6 +1665,8 @@
         }
         lastStatus = status;
         statusSeen = true;
+        $('firmwareBuild').textContent = status.firmwareBuild || '—';
+        $('frontendBuild').textContent = status.frontendBuild || '—';
         if (status.setupSsid) {
             $('deviceName').textContent = status.setupSsid;
         }
@@ -1915,13 +2000,36 @@
         renderTerminal();
     }
 
+    // The countdown owns no timer handle and is never cleared. Each tick is a
+    // view of the pending attempt, so it stops itself as soon as that attempt
+    // is gone or has been superseded: no exit path has to remember it.
+    function tickRetryCountdown(retryAt) {
+        if (terminalReconnectTimer === null || terminalRetryAt !== retryAt) return;
+        renderTerminalRetryCountdown();
+        window.setTimeout(() => tickRetryCountdown(retryAt), 500);
+    }
+
+    function renderTerminalRetryCountdown() {
+        // The alert icon, the warning colour and the footer hint already say
+        // the terminal is down, so this states only what happens next. It also
+        // keeps the line short enough not to wrap at 375px.
+        const seconds = Math.max(0, Math.ceil((terminalRetryAt - Date.now()) / 1000));
+        setTerminalConnection(
+            'triangle-alert', seconds > 0 ? `Retrying in ${seconds}s` : 'Retrying', 'warning');
+    }
+
     function scheduleTerminalReconnect() {
         if (!terminalWanted || terminalClosing || terminalReconnectTimer !== null) return;
+        const delayMs = terminalReconnectDelayMs;
+        terminalRetryAt = Date.now() + delayMs;
         terminalReconnectTimer = window.setTimeout(() => {
             terminalReconnectTimer = null;
             connectTerminal();
-        }, terminalReconnectDelayMs);
-        terminalReconnectDelayMs = Math.min(terminalReconnectDelayMs * 2, 8000);
+        }, delayMs);
+        // Ticks twice a second, so the number shown is never more than half a
+        // second behind the timer it describes.
+        tickRetryCountdown(terminalRetryAt);
+        terminalReconnectDelayMs = Math.min(delayMs * 2, 8000);
     }
 
     function connectTerminal() {
@@ -1958,7 +2066,9 @@
             if (terminalSocket === socket) terminalSocket = null;
             updateTerminalWriteAccess();
             if (!terminalClosing && terminalWanted) {
-                setTerminalConnection('loader-circle', 'Reconnecting…', 'warning', true);
+                // The spinner belongs to an attempt in flight. Between attempts
+                // the page is only waiting on a timer, so it counts that timer
+                // down instead of animating progress that is not happening.
                 scheduleTerminalReconnect();
             }
         });
@@ -1991,11 +2101,8 @@
         $('enterNetwork').addEventListener('click', () => showManualNetwork(false));
         $('otherNetwork').addEventListener('click', () => showManualNetwork(false));
         $('cancelNetworkChange').addEventListener('click', cancelNetworkEdit);
+        $('useNetwork').addEventListener('click', finishNetworkEdit);
         $('cancelPendingNetworkChange').addEventListener('click', cancelNetworkEdit);
-        $('cancelCredentialsNetwork').addEventListener('click', cancelNetworkEdit);
-        $('cancelManualNetwork').addEventListener('click', cancelNetworkEdit);
-        $('backToNetworks').addEventListener('click', returnToNetworkChooser);
-        $('backToNetworksFromManual').addEventListener('click', returnToNetworkChooser);
         $('scanAgain').addEventListener('click', scanNetworks);
         $('changePassword').addEventListener('click', changePassword);
         $('retrySetup').addEventListener('click', loadConfiguration);
@@ -2056,7 +2163,7 @@
     }
 
     function initializeSecurity() {
-        $('configureButton').addEventListener('click', () => openAuthDialog());
+        $('loginButton').addEventListener('click', () => openAuthDialog());
         $('authLoginFields').addEventListener('submit', login);
         $('authBootstrapFields').addEventListener('submit', bootstrapPassword);
 
@@ -2127,6 +2234,7 @@
     }
 
     async function initialize() {
+        initializeTheme();
         initializeTabs();
         initializeConfiguration();
         initializeSecurity();

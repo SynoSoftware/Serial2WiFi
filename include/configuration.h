@@ -25,13 +25,6 @@ enum class Framing : uint8_t {
     SevenO1,
 };
 
-enum class StatusBar : uint8_t {
-    Auto = 0,
-    Serial,
-    Connection,
-    Network,
-};
-
 enum class WifiSecurity : uint8_t {
     Unset = 0,
     Open,
@@ -48,11 +41,13 @@ struct DeviceConfig {
     uint16_t schema;
     uint32_t baud;
     uint8_t framing;
-    // Retains the existing NVS record layout after display mode removal so
-    // firmware upgrades preserve the user's network and serial settings.
+    // These bytes carry no meaning. They retain the existing NVS record layout
+    // after display mode and status bar removal so firmware upgrades preserve
+    // the user's network and serial settings. Do not reuse or remove them:
+    // readStored rejects any record whose length differs.
     uint8_t reserved;
     uint8_t wifiSecurity;
-    uint8_t uiPreferences;
+    uint8_t reserved2;
     char ssid[33];
     char wifiPassword[65];
     uint8_t tcpMode;
@@ -79,7 +74,6 @@ enum class ValidationError : uint8_t {
     TcpListenPort,
     TcpRemoteHost,
     TcpRemotePort,
-    UiPreferences,
     LongPress,
     LongPressRepeat,
     ScreenSaver,
@@ -104,8 +98,5 @@ bool framingFromName(const char *name, Framing &framing);
 uint32_t serialConfig(Framing framing);
 bool supportedBaud(uint32_t baud);
 uint32_t nextBaud(uint32_t current);
-
-StatusBar statusBar(const DeviceConfig &config);
-void setStatusBar(DeviceConfig &config, StatusBar bar);
 
 }  // namespace configuration

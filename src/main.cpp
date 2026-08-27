@@ -14,9 +14,7 @@
 
 namespace {
 
-bool baudScanStarted = false;
-bool baudScanFinished = false;
-uint32_t baudScanStart = 0;
+bool pageActionStopped = false;
 
 bool applyConfiguration(
     const configuration::DeviceConfig &previous,
@@ -70,51 +68,49 @@ bool factoryReset() {
     return configurationCleared && identityCleared && passwordCleared;
 }
 
+void applyPageAction() {
+    if (pageActionStopped) return;
+    const oled_display::PageAction action = oled_display::currentPageAction();
+    if (action == nullptr) return;
+
+    configuration::DeviceConfig candidate = configuration::snapshot();
+    action(candidate);
+    bool runtimeApplied = false;
+    if (!configuration::commit(candidate, applyConfiguration, &runtimeApplied) ||
+            !runtimeApplied) {
+        pageActionStopped = true;
+        prg_button::reportSaveFailed();
+    }
+}
+
 void serviceButtonActions() {
-    if (prg_button::takeSingleClick()) {
-        const configuration::DeviceConfig config = configuration::snapshot();
-        const wifi_access::Snapshot wifi = wifi_access::snapshot();
-        oled_display::handleShortClick(
-            config,
-            wifi.setupApActive,
-            serial_port::snapshot().trafficSeen);
+    switch (prg_button::takeEvent()) {
+        case prg_button::Event::Click:
+            if (oled_display::restoreIfHidden()) break;
+            oled_display::advanceToNextPage(
+                configuration::snapshot(), wifi_access::snapshot().setupApActive);
+            break;
+        case prg_button::Event::HoldStarted:
+            // Clear before the wake test. A hold that only restores a hidden
+            // view returns early, and a flag left set by the previous hold
+            // would swallow every repeat in this one.
+            pageActionStopped = false;
+            if (oled_display::restoreIfHidden()) break;
+            applyPageAction();
+            break;
+        case prg_button::Event::HoldRepeated:
+            if (oled_display::restoreIfHidden()) break;
+            applyPageAction();
+            break;
+        case prg_button::Event::ResetRequested:
+            prg_button::reportFactoryReset(factoryReset());
+            break;
+        case prg_button::Event::RestartRequested:
+            ESP.restart();
+            break;
+        case prg_button::Event::None:
+            break;
     }
-
-    prg_button::HoldEvent hold{};
-    if (prg_button::takeHold(hold)) {
-        oled_display::noteUserInteraction();
-        if (hold.first) {
-            baudScanStarted = false;
-            baudScanFinished = false;
-        }
-        const oled_display::PageAction pageAction = oled_display::currentPageAction();
-        if (!hold.resetEligible && !baudScanFinished && pageAction != nullptr) {
-            const configuration::DeviceConfig config = configuration::snapshot();
-            if (!baudScanStarted) {
-                baudScanStart = config.baud;
-                baudScanStarted = true;
-            }
-
-            configuration::DeviceConfig candidate = config;
-            pageAction(candidate);
-            const bool completesCycle = candidate.baud == baudScanStart;
-            bool runtimeApplied = false;
-            const bool persisted = configuration::commit(candidate, applyConfiguration, &runtimeApplied);
-            if (!persisted || !runtimeApplied) {
-                baudScanFinished = true;
-                prg_button::reportSaveFailed();
-            } else if (completesCycle) {
-                baudScanFinished = true;
-            }
-        }
-    }
-
-    if (prg_button::takeFactoryResetRequest()) {
-        prg_button::reportFactoryReset(factoryReset());
-    }
-
-    if (prg_button::restartPending()) ESP.restart();
-
 }
 
 oled_display::RuntimeStatus runtimeStatus() {
@@ -131,6 +127,7 @@ oled_display::RuntimeStatus runtimeStatus() {
     result.serialError = serial.error;
     strncpy(result.setupSsid, wifi.setupSsid, sizeof(result.setupSsid) - 1);
     strncpy(result.setupPassword, wifi.setupPassword, sizeof(result.setupPassword) - 1);
+    result.setupIp = wifi.setupIp;
     result.stationIp = wifi.stationIp;
     result.serialToNetworkReceived = transport.serialToNetworkReceived;
     result.serialToNetworkDropped = transport.serialToNetworkDropped;

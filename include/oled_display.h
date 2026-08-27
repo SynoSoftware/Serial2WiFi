@@ -15,6 +15,7 @@ struct RuntimeStatus {
     bool serialError;
     char setupSsid[33];
     char setupPassword[17];
+    IPAddress setupIp;
     IPAddress stationIp;
     uint64_t serialToNetworkReceived;
     uint64_t serialToNetworkDropped;
@@ -29,10 +30,13 @@ struct RuntimeStatus {
 using PageAction = void (*)(configuration::DeviceConfig &candidate);
 
 void begin();
-void handleShortClick(
+void advanceToNextPage(
     const configuration::DeviceConfig &config,
-    bool setupApAvailable,
-    bool serialTrafficSeen);
+    bool setupApAvailable);
+// True when the selected page was not visible, so this press only restored the
+// view and must not also act on it. Every press restarts the screen-saver timer,
+// hidden or not, which the name does not convey.
+bool restoreIfHidden();
 void noteUserInteraction();
 PageAction currentPageAction();
 // True when render() would actually redraw. loop() checks this first so the

@@ -5,6 +5,23 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Serial2WiFi</title>
         <link rel="stylesheet" href="/style.css" />
+        <script>
+            // The palette is chosen by this attribute, so it has to be set
+            // before the first paint or a stored choice flashes the other
+            // theme. No stored choice means follow the system.
+            (function () {
+                var stored = null;
+                try {
+                    stored = localStorage.getItem("theme");
+                } catch (error) {
+                    stored = null;
+                }
+                var dark = stored === null
+                    ? window.matchMedia("(prefers-color-scheme: dark)").matches
+                    : stored === "dark";
+                document.documentElement.dataset.theme = dark ? "dark" : "light";
+            })();
+        </script>
     </head>
     <body>
         <svg class="icon-sprite" aria-hidden="true">
@@ -25,7 +42,9 @@
                 <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
             </symbol>
             <symbol id="icon-key-round" viewBox="0 0 24 24">
-                <path d="M15.5 7.5a5.5 5.5 0 1 0-10.72 1.8L2 12v4h4v-2h2v-2h2l1.76-1.76A5.48 5.48 0 0 0 15.5 7.5Z" />
+                <path
+                    d="M15.5 7.5a5.5 5.5 0 1 0-10.72 1.8L2 12v4h4v-2h2v-2h2l1.76-1.76A5.48 5.48 0 0 0 15.5 7.5Z"
+                />
                 <circle cx="15.5" cy="7.5" r=".5" />
             </symbol>
             <symbol id="icon-arrow-left" viewBox="0 0 24 24">
@@ -87,9 +106,27 @@
                 />
                 <path d="M14.12 14.12a3 3 0 0 1-4.24-4.24" />
             </symbol>
+            <symbol id="icon-sun" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2" />
+                <path d="M12 20v2" />
+                <path d="m4.93 4.93 1.41 1.41" />
+                <path d="m17.66 17.66 1.41 1.41" />
+                <path d="M2 12h2" />
+                <path d="M20 12h2" />
+                <path d="m6.34 17.66-1.41 1.41" />
+                <path d="m19.07 4.93-1.41 1.41" />
+            </symbol>
+            <symbol id="icon-moon" viewBox="0 0 24 24">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+            </symbol>
             <symbol id="icon-lock" viewBox="0 0 24 24">
                 <rect width="18" height="11" x="3" y="11" rx="2" />
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </symbol>
+            <symbol id="icon-lock-open" viewBox="0 0 24 24">
+                <rect width="18" height="11" x="3" y="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 9.9-1" />
             </symbol>
             <symbol id="icon-server" viewBox="0 0 24 24">
                 <rect width="20" height="8" x="2" y="2" rx="2" />
@@ -198,21 +235,43 @@
         <main class="shell">
             <header class="brand-row">
                 <div class="device-brand">
-                    <h1 class="product-name">Serial2WiFi</h1>
+                    <div class="brand-lockup">
+                        <h1 class="product-name">Serial2WiFi</h1>
+                        <span class="brand-name">synapse.sr</span>
+                    </div>
                     <span id="deviceName" class="device-name">Loading...</span>
                 </div>
                 <div class="brand-actions">
                     <button
-                        id="configureButton"
-                        class="secondary-button icon-text configure-button"
+                        id="themeToggle"
+                        class="icon-button brand-action"
+                        type="button"
+                        aria-label="Switch theme"
+                    >
+                        <svg class="icon" aria-hidden="true">
+                            <use id="themeIcon" href="#icon-moon"></use>
+                        </svg>
+                    </button>
+                    <button
+                        id="loginButton"
+                        class="secondary-button icon-text brand-action"
                         type="button"
                         hidden
                     >
                         <svg class="icon" aria-hidden="true">
-                            <use href="#icon-settings-2"></use></svg
-                        ><span>Configure</span>
+                            <use href="#icon-log-in"></use></svg
+                        ><span>Login</span>
                     </button>
-                    <span class="brand-name">v3.2 synapse.sr</span>
+                    <button
+                        id="logoutButton"
+                        class="secondary-button icon-text brand-action"
+                        type="button"
+                        hidden
+                    >
+                        <svg class="icon" aria-hidden="true">
+                            <use href="#icon-log-out"></use></svg
+                        ><span>Logout</span>
+                    </button>
                 </div>
             </header>
 
@@ -345,12 +404,18 @@
                                         </div>
                                         <button
                                             id="changeNetwork"
-                                            class="secondary-button icon-text"
+                                            class="secondary-button icon-text row-action"
                                             type="button"
+                                            aria-label="Change network"
                                         >
-                                            <svg class="icon" aria-hidden="true">
-                                                <use href="#icon-wifi"></use></svg
-                                            ><span>Change network</span>
+                                            <svg
+                                                class="icon"
+                                                aria-hidden="true"
+                                            >
+                                                <use
+                                                    href="#icon-wifi"
+                                                ></use></svg
+                                            ><span>Change</span>
                                         </button>
                                     </div>
                                     <div
@@ -368,12 +433,18 @@
                                         >
                                         <button
                                             id="changePassword"
-                                            class="secondary-button icon-text"
+                                            class="secondary-button icon-text row-action"
                                             type="button"
+                                            aria-label="Change Wi-Fi password"
                                         >
-                                            <svg class="icon" aria-hidden="true">
-                                                <use href="#icon-key-round"></use></svg
-                                            ><span>Change password</span>
+                                            <svg
+                                                class="icon"
+                                                aria-hidden="true"
+                                            >
+                                                <use
+                                                    href="#icon-key-round"
+                                                ></use></svg
+                                            ><span>Change</span>
                                         </button>
                                     </div>
                                     <div
@@ -383,10 +454,13 @@
                                     >
                                         <button
                                             id="cancelPendingNetworkChange"
-                                            class="text-button"
+                                            class="secondary-button icon-text row-action"
                                             type="button"
+                                            aria-label="Cancel network change"
                                         >
-                                            Cancel network change
+                                            <svg class="icon" aria-hidden="true">
+                                                <use href="#icon-x"></use></svg
+                                            ><span>Cancel</span>
                                         </button>
                                     </div>
                                 </div>
@@ -429,192 +503,176 @@
                                 </div>
                             </div>
 
-                            <div id="wifiChooser" class="wifi-editor" hidden>
-                                <div class="editor-heading">
-                                    <strong>Choose network</strong
-                                    ><button
-                                        id="cancelNetworkChange"
-                                        class="text-button"
+                            <div id="wifiEditor" class="editor-panel" hidden>
+                                <div id="wifiChooser" class="wifi-editor" hidden>
+                                    <div class="editor-heading">
+                                        <div class="editor-title">
+                                            <strong>Choose network</strong>
+                                            <span
+                                                id="scanState"
+                                                class="scan-state"
+                                                aria-live="polite"
+                                            ></span>
+                                        </div>
+                                    </div>
+                                    <div
+                                        id="scanProgress"
+                                        class="progress"
+                                        aria-hidden="true"
+                                        hidden
+                                    >
+                                        <span></span>
+                                    </div>
+                                    <div
+                                        id="networkList"
+                                        class="network-list"
+                                        aria-label="Available Wi-Fi networks"
+                                    ></div>
+                                    <button
+                                        id="otherNetwork"
+                                        class="network-row network-other"
                                         type="button"
                                     >
-                                        Cancel
+                                        <span class="network-leading"
+                                            ><svg class="icon" aria-hidden="true">
+                                                <use href="#icon-plus"></use></svg
+                                            ><span>Other network...</span></span
+                                        >
+                                        <span class="network-meta"
+                                            >Enter manually</span
+                                        >
                                     </button>
                                 </div>
-                                <div class="scan-heading">
-                                    <span
-                                        id="scanState"
-                                        class="scan-state"
-                                        aria-live="polite"
-                                    ></span>
+
+                                <div
+                                    id="wifiCredentials"
+                                    class="wifi-editor"
+                                    hidden
+                                >
+                                    <div class="editor-heading">
+                                        <div class="editor-title">
+                                            <strong id="wifiCredentialsName"
+                                                >Network</strong
+                                            >
+                                            <span>Enter the network password.</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div
+                                    id="manualNetworkFields"
+                                    class="wifi-editor"
+                                    hidden
+                                >
+                                    <div class="editor-heading">
+                                        <strong>Network</strong>
+                                    </div>
+                                    <div class="network-grid">
+                                        <div class="field">
+                                            <label for="ssid">Network name</label>
+                                            <input
+                                                id="ssid"
+                                                autocomplete="off"
+                                                maxlength="32"
+                                                aria-describedby="ssidError"
+                                            />
+                                            <p
+                                                id="ssidError"
+                                                class="field-error"
+                                                role="alert"
+                                                hidden
+                                            ></p>
+                                        </div>
+                                        <div class="field">
+                                            <label for="wifiSecurity"
+                                                >Security</label
+                                            >
+                                            <select
+                                                id="wifiSecurity"
+                                                aria-describedby="wifiSecurityError"
+                                            >
+                                                <option value="secured">
+                                                    Password protected
+                                                </option>
+                                                <option value="open">Open</option>
+                                            </select>
+                                            <p
+                                                id="wifiSecurityError"
+                                                class="field-error"
+                                                role="alert"
+                                                hidden
+                                            ></p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div
+                                    id="passwordEditor"
+                                    class="field password-editor"
+                                    hidden
+                                >
+                                    <label for="wifiPassword">Password</label>
+                                    <div class="password-control">
+                                        <input
+                                            id="wifiPassword"
+                                            type="password"
+                                            autocomplete="new-password"
+                                            maxlength="64"
+                                            aria-describedby="wifiPasswordError"
+                                        />
+                                        <button
+                                            class="password-toggle"
+                                            type="button"
+                                            data-password-toggle="wifiPassword"
+                                            aria-label="Show Wi-Fi password"
+                                            aria-pressed="false"
+                                        >
+                                            <svg class="icon" aria-hidden="true">
+                                                <use href="#icon-eye"></use>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <p
+                                        id="wifiPasswordError"
+                                        class="field-error"
+                                        role="alert"
+                                        hidden
+                                    ></p>
+                                </div>
+
+                                <div
+                                    id="wifiEditorActions"
+                                    class="editor-footer"
+                                >
+                                    <button
+                                        id="cancelNetworkChange"
+                                        class="secondary-button icon-text row-action"
+                                        type="button"
+                                    >
+                                        <svg class="icon" aria-hidden="true">
+                                            <use href="#icon-x"></use></svg
+                                        ><span>Cancel</span>
+                                    </button>
                                     <button
                                         id="scanAgain"
-                                        class="text-button icon-text"
+                                        class="secondary-button icon-text row-action"
                                         type="button"
                                         hidden
                                     >
                                         <svg class="icon" aria-hidden="true">
-                                            <use
-                                                href="#icon-refresh-cw"
-                                            ></use></svg
-                                        ><span>Scan again</span>
+                                            <use href="#icon-refresh-cw"></use></svg
+                                        ><span>Scan</span>
                                     </button>
-                                </div>
-                                <div
-                                    id="scanProgress"
-                                    class="progress"
-                                    aria-hidden="true"
-                                    hidden
-                                >
-                                    <span></span>
-                                </div>
-                                <div
-                                    id="networkList"
-                                    class="network-list"
-                                    aria-label="Available Wi-Fi networks"
-                                ></div>
-                                <button
-                                    id="otherNetwork"
-                                    class="network-row network-other"
-                                    type="button"
-                                >
-                                    <span class="network-leading"
-                                        ><svg class="icon" aria-hidden="true">
-                                            <use href="#icon-plus"></use></svg
-                                        ><span>Other network...</span></span
-                                    >
-                                    <span class="network-meta"
-                                        >Enter manually</span
-                                    >
-                                </button>
-                            </div>
-
-                            <div
-                                id="wifiCredentials"
-                                class="wifi-editor"
-                                hidden
-                            >
-                                <div class="editor-heading">
-                                    <div class="editor-title">
-                                        <strong id="wifiCredentialsName">Network</strong>
-                                        <span>Enter the network password.</span>
-                                    </div>
-                                    <div class="editor-actions">
-                                        <button
-                                            id="backToNetworks"
-                                            class="text-button icon-text"
-                                            type="button"
-                                        >
-                                            <svg class="icon" aria-hidden="true">
-                                                <use href="#icon-arrow-left"></use></svg
-                                            ><span>Networks</span>
-                                        </button>
-                                        <button
-                                            id="cancelCredentialsNetwork"
-                                            class="text-button"
-                                            type="button"
-                                        >
-                                            Cancel
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div
-                                id="manualNetworkFields"
-                                class="wifi-editor"
-                                hidden
-                            >
-                                <div class="editor-heading">
-                                    <strong>Network</strong
-                                    ><div class="editor-actions">
-                                        <button
-                                            id="backToNetworksFromManual"
-                                            class="text-button icon-text"
-                                            type="button"
-                                        >
-                                            <svg class="icon" aria-hidden="true">
-                                                <use href="#icon-arrow-left"></use></svg
-                                            ><span>Networks</span>
-                                        </button>
-                                        <button
-                                            id="cancelManualNetwork"
-                                            class="text-button"
-                                            type="button"
-                                        >
-                                            Cancel
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="network-grid">
-                                    <div class="field">
-                                        <label for="ssid">Network name</label>
-                                        <input
-                                            id="ssid"
-                                            autocomplete="off"
-                                            maxlength="32"
-                                            aria-describedby="ssidError"
-                                        />
-                                        <p
-                                            id="ssidError"
-                                            class="field-error"
-                                            role="alert"
-                                            hidden
-                                        ></p>
-                                    </div>
-                                    <div class="field">
-                                        <label for="wifiSecurity"
-                                            >Security</label
-                                        >
-                                        <select
-                                            id="wifiSecurity"
-                                            aria-describedby="wifiSecurityError"
-                                        >
-                                            <option value="secured">
-                                                Password protected
-                                            </option>
-                                            <option value="open">Open</option>
-                                        </select>
-                                        <p
-                                            id="wifiSecurityError"
-                                            class="field-error"
-                                            role="alert"
-                                            hidden
-                                        ></p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div
-                                id="passwordEditor"
-                                class="field password-editor"
-                                hidden
-                            >
-                                <label for="wifiPassword">Password</label>
-                                <div class="password-control">
-                                    <input
-                                        id="wifiPassword"
-                                        type="password"
-                                        autocomplete="new-password"
-                                        maxlength="64"
-                                        aria-describedby="wifiPasswordError"
-                                    />
                                     <button
-                                        class="password-toggle"
+                                        id="useNetwork"
+                                        class="primary icon-text"
                                         type="button"
-                                        data-password-toggle="wifiPassword"
-                                        aria-label="Show Wi-Fi password"
-                                        aria-pressed="false"
                                     >
                                         <svg class="icon" aria-hidden="true">
-                                            <use href="#icon-eye"></use></svg>
+                                            <use href="#icon-circle-check"></use></svg
+                                        ><span>Done</span>
                                     </button>
                                 </div>
-                                <p
-                                    id="wifiPasswordError"
-                                    class="field-error"
-                                    role="alert"
-                                    hidden
-                                ></p>
                             </div>
                         </section>
 
@@ -638,58 +696,60 @@
                                 ></span>
                             </div>
 
-                            <fieldset
-                                id="tcpMode"
-                                class="field tcp-mode-field"
-                                aria-describedby="tcpModeError"
-                            >
-                                <legend>Mode</legend>
-                                <div class="segmented-control">
-                                    <label class="segmented-option"
-                                        ><input
-                                            type="radio"
-                                            name="tcpMode"
-                                            value="listen"
-                                            checked
-                                        /><span>Listen</span></label
-                                    >
-                                    <label class="segmented-option"
-                                        ><input
-                                            type="radio"
-                                            name="tcpMode"
-                                            value="connect"
-                                        /><span>Connect</span></label
-                                    >
-                                </div>
-                                <p
-                                    id="tcpModeError"
-                                    class="field-error"
-                                    role="alert"
-                                    hidden
-                                ></p>
-                            </fieldset>
-
-                            <div id="tcpListenFields" class="tcp-fields">
-                                <div class="field port-field">
-                                    <label for="tcpListenPort"
-                                        >Listening port</label
-                                    >
-                                    <input
-                                        id="tcpListenPort"
-                                        type="number"
-                                        min="0"
-                                        max="65535"
-                                        step="1"
-                                        inputmode="numeric"
-                                        placeholder="5000"
-                                        aria-describedby="tcpListenPortError"
-                                    />
+                            <div class="field-grid">
+                                <fieldset
+                                    id="tcpMode"
+                                    class="field tcp-mode-field"
+                                    aria-describedby="tcpModeError"
+                                >
+                                    <legend>Mode</legend>
+                                    <div class="segmented-control">
+                                        <label class="segmented-option"
+                                            ><input
+                                                type="radio"
+                                                name="tcpMode"
+                                                value="listen"
+                                                checked
+                                            /><span>Listen</span></label
+                                        >
+                                        <label class="segmented-option"
+                                            ><input
+                                                type="radio"
+                                                name="tcpMode"
+                                                value="connect"
+                                            /><span>Connect</span></label
+                                        >
+                                    </div>
                                     <p
-                                        id="tcpListenPortError"
+                                        id="tcpModeError"
                                         class="field-error"
                                         role="alert"
                                         hidden
                                     ></p>
+                                </fieldset>
+
+                                <div id="tcpListenFields" class="tcp-fields">
+                                    <div class="field port-field">
+                                        <label for="tcpListenPort"
+                                            >Listening port</label
+                                        >
+                                        <input
+                                            id="tcpListenPort"
+                                            type="number"
+                                            min="0"
+                                            max="65535"
+                                            step="1"
+                                            inputmode="numeric"
+                                            placeholder="5000"
+                                            aria-describedby="tcpListenPortError"
+                                        />
+                                        <p
+                                            id="tcpListenPortError"
+                                            class="field-error"
+                                            role="alert"
+                                            hidden
+                                        ></p>
+                                    </div>
                                 </div>
                             </div>
 
@@ -891,7 +951,7 @@
                                             id="screenSaverHelp"
                                             class="field-help"
                                         >
-                                            Off disables the screen saver.
+                                            Leave blank to keep the display on.
                                         </p>
                                         <p
                                             id="screenSaverSecondsError"
@@ -903,7 +963,33 @@
                                 </section>
                             </div>
                         </section>
-
+                        <div id="saveRow" class="save-row" hidden>
+                            <div
+                                id="saveState"
+                                class="save-state"
+                                aria-live="polite"
+                                hidden
+                            >
+                                <svg class="icon" aria-hidden="true">
+                                    <use
+                                        id="saveStateIcon"
+                                        href="#icon-circle-check"
+                                    ></use>
+                                </svg>
+                                <span id="saveStateText"></span>
+                            </div>
+                            <button
+                                id="save"
+                                class="primary icon-text"
+                                type="submit"
+                                form="configuration"
+                                disabled
+                            >
+                                <svg class="icon" aria-hidden="true">
+                                    <use href="#icon-save"></use></svg
+                                ><span id="saveText">Save</span>
+                            </button>
+                        </div>
                     </form>
 
                     <section
@@ -927,61 +1013,21 @@
                             <div class="security-actions">
                                 <button
                                     id="openPasswordChange"
-                                    class="secondary-button icon-text"
+                                    class="secondary-button icon-text row-action"
                                     type="button"
+                                    aria-label="Change administrator password"
                                 >
                                     <svg class="icon" aria-hidden="true">
                                         <use href="#icon-key-round"></use></svg
-                                    ><span>Change password</span>
-                                </button>
-                                <button
-                                    id="logoutButton"
-                                    class="text-button icon-text"
-                                    type="button"
-                                >
-                                    <svg class="icon" aria-hidden="true">
-                                        <use href="#icon-log-out"></use></svg
-                                    ><span>Sign out</span>
+                                    ><span>Change</span>
                                 </button>
                             </div>
                         </div>
                     </section>
-
-                    <div id="saveRow" class="save-row" hidden>
-                        <div
-                            id="saveState"
-                            class="save-state"
-                            aria-live="polite"
-                            hidden
-                        >
-                            <svg class="icon" aria-hidden="true">
-                                <use
-                                    id="saveStateIcon"
-                                    href="#icon-circle-check"
-                                ></use>
-                            </svg>
-                            <span id="saveStateText"></span>
-                        </div>
-                        <button
-                            id="save"
-                            class="primary icon-text"
-                            type="submit"
-                            form="configuration"
-                            disabled
-                        >
-                            <svg class="icon" aria-hidden="true">
-                                <use href="#icon-save"></use></svg
-                            ><span id="saveText">Save changes</span>
-                        </button>
-                    </div>
                 </div>
             </section>
 
-            <section
-                id="statusView"
-                class="view"
-                hidden
-            >
+            <section id="statusView" class="view" hidden>
                 <div class="view-content">
                     <section
                         class="bridge-summary"
@@ -992,14 +1038,14 @@
                                 <use href="#icon-activity"></use></svg
                             ><span>Bridge</span>
                         </h2>
-                        <div
-                            id="bridgeState"
-                            class="bridge-state"
-                            data-state="neutral"
-                        >
-                            Loading...
-                        </div>
-                        <p id="bridgeDetail" class="bridge-detail"></p>
+                        <p class="bridge-status">
+                            <span
+                                id="bridgeState"
+                                class="bridge-state"
+                                data-state="neutral"
+                                >Loading...</span
+                            ><span id="bridgeDetail" class="bridge-detail"></span>
+                        </p>
                     </section>
 
                     <div
@@ -1115,6 +1161,32 @@
                                 <div>
                                     <dt>Dropped</dt>
                                     <dd id="statusDrops">-</dd>
+                                </div>
+                            </dl>
+                        </section>
+
+                        <section
+                            id="buildGroup"
+                            class="status-group"
+                            aria-labelledby="buildStatusTitle"
+                            hidden
+                        >
+                            <h2 id="buildStatusTitle" class="section-title">
+                                <svg
+                                    class="icon section-icon"
+                                    aria-hidden="true"
+                                >
+                                    <use href="#icon-info"></use></svg
+                                ><span>Build</span>
+                            </h2>
+                            <dl class="status-list">
+                                <div>
+                                    <dt>Firmware</dt>
+                                    <dd id="firmwareBuild">-</dd>
+                                </div>
+                                <div>
+                                    <dt>Frontend</dt>
+                                    <dd id="frontendBuild">-</dd>
                                 </div>
                             </dl>
                         </section>
@@ -1265,9 +1337,14 @@
                     </section>
                 </div>
             </section>
+
         </main>
 
-        <dialog id="authDialog" class="app-dialog auth-dialog" aria-labelledby="authDialogTitle">
+        <dialog
+            id="authDialog"
+            class="app-dialog auth-dialog"
+            aria-labelledby="authDialogTitle"
+        >
             <div class="dialog-header dialog-header-with-close">
                 <div>
                     <h2 id="authDialogTitle">Sign in to configure</h2>
@@ -1280,7 +1357,8 @@
                     aria-label="Close sign-in dialog"
                 >
                     <svg class="icon" aria-hidden="true">
-                        <use href="#icon-x"></use></svg>
+                        <use href="#icon-x"></use>
+                    </svg>
                 </button>
             </div>
             <form id="authLoginFields" class="dialog-body" hidden>
@@ -1300,13 +1378,18 @@
                             aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg>
+                                <use href="#icon-eye"></use>
+                            </svg>
                         </button>
                     </div>
                 </div>
                 <p id="authError" class="field-error" role="alert" hidden></p>
                 <div class="dialog-actions">
-                    <button id="loginButton" class="primary icon-text" type="submit">
+                    <button
+                        id="loginButton"
+                        class="primary icon-text"
+                        type="submit"
+                    >
                         <svg class="icon" aria-hidden="true">
                             <use href="#icon-log-in"></use></svg
                         ><span>Sign in</span>
@@ -1315,7 +1398,9 @@
             </form>
             <form id="authBootstrapFields" class="dialog-body" hidden>
                 <div class="field">
-                    <label for="bootstrapPassword">Administrator password</label>
+                    <label for="bootstrapPassword"
+                        >Administrator password</label
+                    >
                     <div class="password-control">
                         <input
                             id="bootstrapPassword"
@@ -1330,12 +1415,15 @@
                             aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg>
+                                <use href="#icon-eye"></use>
+                            </svg>
                         </button>
                     </div>
                 </div>
                 <div class="field">
-                    <label for="bootstrapPasswordConfirm">Confirm password</label>
+                    <label for="bootstrapPasswordConfirm"
+                        >Confirm password</label
+                    >
                     <div class="password-control">
                         <input
                             id="bootstrapPasswordConfirm"
@@ -1350,13 +1438,23 @@
                             aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg>
+                                <use href="#icon-eye"></use>
+                            </svg>
                         </button>
                     </div>
                 </div>
-                <p id="authBootstrapError" class="field-error" role="alert" hidden></p>
+                <p
+                    id="authBootstrapError"
+                    class="field-error"
+                    role="alert"
+                    hidden
+                ></p>
                 <div class="dialog-actions">
-                    <button id="bootstrapButton" class="primary icon-text" type="submit">
+                    <button
+                        id="bootstrapButton"
+                        class="primary icon-text"
+                        type="submit"
+                    >
                         <svg class="icon" aria-hidden="true">
                             <use href="#icon-shield-check"></use></svg
                         ><span>Create password</span>
@@ -1395,7 +1493,8 @@
                             aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg>
+                                <use href="#icon-eye"></use>
+                            </svg>
                         </button>
                     </div>
                 </div>
@@ -1415,7 +1514,8 @@
                             aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg>
+                                <use href="#icon-eye"></use>
+                            </svg>
                         </button>
                     </div>
                 </div>
@@ -1435,7 +1535,8 @@
                             aria-pressed="false"
                         >
                             <svg class="icon" aria-hidden="true">
-                                <use href="#icon-eye"></use></svg>
+                                <use href="#icon-eye"></use>
+                            </svg>
                         </button>
                     </div>
                 </div>
@@ -1459,10 +1560,15 @@
                     >
                         Cancel
                     </button>
-                    <button id="updatePassword" class="primary icon-text" type="submit">
+                    <button
+                        id="updatePassword"
+                        class="primary icon-text"
+                        type="submit"
+                        aria-label="Change administrator password"
+                    >
                         <svg class="icon" aria-hidden="true">
                             <use href="#icon-key-round"></use></svg
-                        ><span>Change password</span>
+                        ><span>Change</span>
                     </button>
                 </div>
             </form>
@@ -1477,7 +1583,8 @@
                 <div>
                     <h2 id="signoutDialogTitle">Discard unsaved changes?</h2>
                     <p>
-                        Signing out will discard the configuration changes that have not been saved.
+                        Signing out will discard the configuration changes that
+                        have not been saved.
                     </p>
                 </div>
             </div>
@@ -1485,7 +1592,11 @@
                 <button id="keepSession" class="secondary-button" type="button">
                     Keep session
                 </button>
-                <button id="confirmSignout" class="danger-button icon-text" type="button">
+                <button
+                    id="confirmSignout"
+                    class="danger-button icon-text"
+                    type="button"
+                >
                     <svg class="icon" aria-hidden="true">
                         <use href="#icon-log-out"></use></svg
                     ><span>Sign out and discard</span>

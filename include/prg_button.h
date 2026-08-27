@@ -12,23 +12,23 @@ enum class Overlay : uint8_t {
     SaveFailed,
 };
 
-struct HoldEvent {
-    bool resetEligible;
-    bool first;
+enum class Event : uint8_t {
+    None = 0,
+    Click,
+    HoldStarted,
+    HoldRepeated,
+    ResetRequested,
+    RestartRequested,
 };
 
 void begin(uint32_t longPressMs, uint32_t longPressRepeatMs);
 void setLongPressMs(uint32_t longPressMs);
 void setLongPressRepeatMs(uint32_t longPressRepeatMs);
 void service();
-bool isPressed();
 
-bool takeSingleClick();
-bool takeHold(HoldEvent &event);
-bool takeFactoryResetRequest();
+Event takeEvent();
 void reportSaveFailed();
 void reportFactoryReset(bool succeeded);
-bool restartPending();
 
 Overlay overlay();
 uint32_t resetCountdown();

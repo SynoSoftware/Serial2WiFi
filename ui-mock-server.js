@@ -55,23 +55,56 @@ function readForm(request) {
     });
 }
 
+// The firmware reports its own compile-time stamp and reads the frontend one
+// out of the filesystem image; here the process start stands in for the first
+// and the real generated file supplies the second.
+const firmwareBuild = stampNow();
+
+function stampNow() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(now.getFullYear() % 100)}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+        `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+function frontendBuild() {
+    try {
+        return fs.readFileSync(path.join(dataRoot, 'build-stamp.txt'), 'utf8').trim();
+    } catch {
+        return '';
+    }
+}
+
+function tcpState() {
+    if (config.tcpMode === 'listen') {
+        return Number(config.tcpListenPort) > 0 ? 'listening' : 'disabled';
+    }
+    return config.tcpRemoteHost && Number(config.tcpRemotePort) > 0
+        ? 'connected'
+        : 'disabled';
+}
+
 function status() {
     return {
         passwordSet: state.passwordSet,
         authenticated: state.authenticated,
         terminalAvailable: state.terminalAvailable,
-        wifiConfigured: true,
-        wifiConnected: true,
+        firmwareBuild,
+        frontendBuild: frontendBuild(),
+        wifiConfigured: Boolean(config.ssid),
+        wifiConnected: Boolean(config.ssid),
         wifiApActive: true,
         setupSsid: 'S2W-B9',
-        stationIp: '10.0.88.184',
-        tcpMode: 'listen',
-        tcpState: 'listening',
-        tcpListenPort: 5000,
-        tcpRemoteHost: '',
-        tcpRemotePort: 0,
-        baud: 19200,
-        framing: '8N1',
+        stationIp: config.ssid ? '10.0.88.184' : '',
+        // Derived from the saved record, like the firmware. Hardcoding these
+        // made the runtime labels report a state no save could ever change.
+        tcpMode: config.tcpMode,
+        tcpState: tcpState(),
+        tcpListenPort: Number(config.tcpListenPort),
+        tcpRemoteHost: config.tcpRemoteHost,
+        tcpRemotePort: Number(config.tcpRemotePort),
+        baud: Number(config.baud),
+        framing: config.framing,
         serialToNetworkReceived: 0,
         networkToSerialReceived: 0,
         serialToNetworkDropped: 0,

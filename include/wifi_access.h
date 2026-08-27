@@ -21,6 +21,7 @@ struct Snapshot {
     char stationSsid[33];
     char setupSsid[33];
     char setupPassword[17];
+    IPAddress setupIp;
     IPAddress stationIp;
 };
 

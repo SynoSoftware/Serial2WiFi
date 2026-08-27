@@ -6,6 +6,7 @@
 #include <Wire.h>
 #include <cstring>
 
+#include "build_number.h"
 #include "display_history.h"
 
 namespace oled_display {
@@ -21,6 +22,11 @@ constexpr uint32_t kPageTitleMs = 1000;
 constexpr size_t kPayloadRows = 7;
 constexpr uint8_t kCompactFont = 1;
 constexpr uint8_t kLargeFont = 2;
+// The classic font is 5x7 ink in a 6x8 cell, so 21 glyphs span the 128px
+// width. Right-aligning a string needs the cell width by name; it cannot be
+// expressed with getTextBounds without measuring first.
+constexpr int16_t kCompactGlyphWidth = 6;
+constexpr size_t kCompactColumns = 128 / kCompactGlyphWidth;
 constexpr int16_t kSetupQrModuleCount = 25;
 constexpr uint8_t kSetupQrModulePixels = 2;
 constexpr int16_t kSetupQrSizePixels = kSetupQrModuleCount * kSetupQrModulePixels;
@@ -39,12 +45,12 @@ uint64_t lastSerialReceived = 0;
 uint64_t lastNetworkReceived = 0;
 uint32_t serialRate = 0;
 uint32_t networkRate = 0;
-char firmwareBuildNumber[14]{};
 
 enum class Page : uint8_t {
     Brand = 0,
-    Qr,
-    Credentials,
+    Wifi,
+    SetupQr,
+    SetupCredentials,
     LiveText,
     LiveHex,
     Statistics,
@@ -71,7 +77,15 @@ bool renderRequested = true;
 uint32_t lastUserInteraction = 0;
 bool pageTitleVisible = false;
 uint32_t pageTitleStartedAt = 0;
-bool serialTrafficRedirected = false;
+
+// A station connect or disconnect briefly takes the screen, reusing the Wi-Fi
+// page's own renderer. The previous value lives here, beside the deadline it
+// serves, rather than in PageObservation: station connectivity never decides
+// which page is selected, so navigation must not have to carry it.
+constexpr uint32_t kWifiTransitionMs = 2000;
+bool wifiTransitionObserved = false;
+bool wifiTransitionConnected = false;
+uint32_t wifiTransitionUntil = 0;
 
 struct TextLine {
     char value[22];
@@ -94,7 +108,6 @@ void drawCenteredText(
     int16_t regionWidth,
     int16_t centerY);
 uint8_t largestReadableFont(const char *text, int16_t regionWidth);
-void formatBuildNumber(char *destination, size_t capacity);
 void renderLiveText(
     const configuration::DeviceConfig &config,
     const RuntimeStatus &status,
@@ -135,7 +148,8 @@ void prepareNextBaud(configuration::DeviceConfig &candidate);
 constexpr PageDescription kPageDescriptions[] = {
     {nullptr, nullptr, renderBrandPage, false},
     {nullptr, nullptr, renderWifiState, false},
-    {nullptr, nullptr, renderSetupCredentials, false},
+    {nullptr, nullptr, renderSetupQr, true},
+    {nullptr, nullptr, renderSetupCredentials, true},
     {nullptr, "LIVE TEXT", renderLiveText, false},
     {nullptr, "LIVE HEX", renderLiveHex, false},
     {nullptr, "STATISTICS", renderStats, false},
@@ -175,51 +189,36 @@ void showCurrentPageTitle() {
 
 void initializePage(
     const configuration::DeviceConfig &config,
-    bool setupApAvailable,
-    bool serialTrafficSeen) {
+    bool setupApAvailable) {
     currentPage = Page::Brand;
     pageInitialized = true;
     previousObservation = {
         config.ssid[0] == '\0',
         setupApAvailable,
     };
-    serialTrafficRedirected = serialTrafficSeen;
 }
 
 void normalizePage(
     const configuration::DeviceConfig &config,
-    bool setupApAvailable,
-    bool serialTrafficSeen) {
+    bool setupApAvailable) {
     const PageObservation observation = {
         config.ssid[0] == '\0',
         setupApAvailable,
     };
-    const bool becameConfigured =
-        previousObservation.unconfigured && !observation.unconfigured;
     const bool becameUnconfigured =
         !previousObservation.unconfigured && observation.unconfigured;
-    const bool setupApAppeared =
-        !previousObservation.setupApAvailable && observation.setupApAvailable;
     const bool setupApDisappeared =
         previousObservation.setupApAvailable && !observation.setupApAvailable;
-    if (becameConfigured && setupOnlyPage(currentPage)) {
-        selectPage(Page::Brand, false);
-    } else if (becameUnconfigured && observation.setupApAvailable) {
-        selectPage(
-            serialTrafficSeen ? Page::Brand : Page::Qr,
-            false);
-        serialTrafficRedirected = serialTrafficSeen;
-    } else if (setupApAppeared && observation.unconfigured &&
-            !serialTrafficSeen) {
-        selectPage(Page::Qr, false);
+    // The selected page moves for exactly two reasons: the device lost its
+    // station configuration and now needs the setup path, or the page being
+    // displayed has just stopped existing. Nothing else may steal the
+    // selection. A page becoming configured does not move the user off it,
+    // because the setup AP stays up through its grace period and the setup
+    // pages remain valid there.
+    if (becameUnconfigured && observation.setupApAvailable) {
+        selectPage(Page::SetupQr, false);
     } else if (setupApDisappeared && setupOnlyPage(currentPage)) {
-        selectPage(Page::Brand, false);
-    } else if (!serialTrafficRedirected && observation.unconfigured &&
-            serialTrafficSeen) {
-        serialTrafficRedirected = true;
-        if (setupApAvailable && setupOnlyPage(currentPage)) {
-            selectPage(Page::Brand, false);
-        }
+        selectPage(Page::Wifi, false);
     }
     previousObservation = observation;
 }
@@ -232,7 +231,7 @@ void advancePage(bool setupApAvailable) {
     selectPage(static_cast<Page>(next), true);
 }
 
-enum class WifiIcon : uint8_t { Wifi, High, Low, Zero, Off };
+enum class WifiIcon : uint8_t { Strong, Medium, Weak, Off };
 
 // These 1-bit crops are rendered offline from the supplied Lucide SVG paths
 // at the OLED's 64px height. The device draws fixed flash data; it never
@@ -299,86 +298,116 @@ void drawWifiIcon(WifiIcon icon) {
         oled.drawBitmap(left + 2, 2, kWifiOffBitmap, 60, 60, SSD1306_WHITE);
         return;
     }
-    if (icon == WifiIcon::Wifi) {
-        oled.drawBitmap(left + 2, 10, kWifiOuterBitmap, 60, 17, SSD1306_WHITE);
+    if (icon == WifiIcon::Strong) {
+        oled.drawBitmap(left + 2, 4, kWifiOuterBitmap, 60, 17, SSD1306_WHITE);
     }
-    if (icon == WifiIcon::Wifi || icon == WifiIcon::High) {
-        oled.drawBitmap(left + 10, 24, kWifiMiddleBitmap, 44, 13, SSD1306_WHITE);
+    if (icon == WifiIcon::Strong || icon == WifiIcon::Medium) {
+        oled.drawBitmap(left + 10, 18, kWifiMiddleBitmap, 44, 13, SSD1306_WHITE);
     }
-    if (icon != WifiIcon::Zero) {
-        oled.drawBitmap(left + 20, 37, kWifiInnerBitmap, 24, 10, SSD1306_WHITE);
-    }
-    oled.drawBitmap(left + 29, 50, kWifiDotBitmap, 6, 6, SSD1306_WHITE);
+    // The inner arc and the dot are common to every connected strength. The
+    // weakest bucket must still draw something recognizable as a Wi-Fi symbol.
+    oled.drawBitmap(left + 20, 31, kWifiInnerBitmap, 24, 10, SSD1306_WHITE);
+    oled.drawBitmap(left + 29, 44, kWifiDotBitmap, 6, 6, SSD1306_WHITE);
 }
+
+constexpr int32_t kWifiStrongDbm = -60;
+constexpr int32_t kWifiMediumDbm = -70;
+constexpr int32_t kWifiIconMarginDbm = 4;
+
+// What the icon currently shows, which is what the hysteresis below holds on
+// to. Off is a real state here: it is what a disconnected page draws.
+WifiIcon shownWifiIcon = WifiIcon::Off;
 
 WifiIcon stationWifiIcon(int32_t rssi) {
-    if (rssi >= -60) return WifiIcon::Wifi;
-    if (rssi >= -70) return WifiIcon::High;
-    if (rssi >= -80) return WifiIcon::Low;
-    return WifiIcon::Zero;
+    // The driver's RSSI moves several dBm between frames while the device is
+    // still, and the display re-buckets it ten times a second, so plain
+    // thresholds flip the icon continuously near a boundary. The bucket already
+    // on screen keeps the icon until the reading leaves its band by the margin.
+    // A change larger than the margin still moves the icon on the next frame.
+    // Off is never widened, so a reconnect seeds from the plain thresholds.
+    if (shownWifiIcon == WifiIcon::Strong &&
+            rssi >= kWifiStrongDbm - kWifiIconMarginDbm) {
+        return WifiIcon::Strong;
+    }
+    if (shownWifiIcon == WifiIcon::Medium &&
+            rssi >= kWifiMediumDbm - kWifiIconMarginDbm &&
+            rssi < kWifiStrongDbm + kWifiIconMarginDbm) {
+        return WifiIcon::Medium;
+    }
+    if (shownWifiIcon == WifiIcon::Weak &&
+            rssi < kWifiMediumDbm + kWifiIconMarginDbm) {
+        return WifiIcon::Weak;
+    }
+    if (rssi >= kWifiStrongDbm) return WifiIcon::Strong;
+    if (rssi >= kWifiMediumDbm) return WifiIcon::Medium;
+    return WifiIcon::Weak;
 }
 
+// This page answers one question: what is the station Wi-Fi doing? It never
+// tests the setup AP. The same renderer draws the transient connect and
+// disconnect feedback, so the two presentations cannot drift apart.
 void renderWifiState(
-    const configuration::DeviceConfig &config,
+    const configuration::DeviceConfig &,
     const RuntimeStatus &status,
     bool) {
-    if (status.setupApActive) {
-        renderSetupQr(config, status, false);
+    if (!status.stationConfigured) {
+        // Having no configuration is not a signal strength, so it is stated in
+        // words rather than borrowed from the connection-quality artwork.
+        drawCenteredText("Wi-Fi not configured", kCompactFont, 0, 128, 32);
+        return;
+    }
+    if (!status.stationConnected) {
+        // The crossed-out artwork spans the full 64px height. There is no
+        // margin to label, and clipping the icon to make room would cost more
+        // than the label is worth.
+        shownWifiIcon = WifiIcon::Off;
+        drawWifiIcon(WifiIcon::Off);
         return;
     }
 
-    const WifiIcon icon = status.stationConnected ?
-        stationWifiIcon(status.stationRssi) : WifiIcon::Off;
-    drawWifiIcon(icon);
+    // The connected artwork occupies y4..y49. Identity sits on one row along
+    // the bottom edge rather than wrapped around the icon, so the artwork keeps
+    // the whole upper area and the text reads as a single caption.
+    shownWifiIcon = stationWifiIcon(status.stationRssi);
+    drawWifiIcon(shownWifiIcon);
+
+    // Name to the left, address to the right. 21 compact glyphs span the row,
+    // and the address is the value the user acts on, so it is never shortened
+    // and the name gives up columns first. One blank column separates them.
+    const String ip = status.stationIp.toString();
+    const size_t ipChars = ip.length();
+    const size_t ssidChars = ipChars + 1 < kCompactColumns ? kCompactColumns - ipChars - 1 : 0;
+    char ssid[kCompactColumns + 1];
+    snprintf(ssid, ssidChars + 1, "%s", status.stationSsid);
+
+    oled.setTextSize(kCompactFont);
+    oled.setCursor(0, 56);
+    oled.print(ssid);
+    oled.setCursor(128 - static_cast<int16_t>(ipChars) * kCompactGlyphWidth, 56);
+    oled.print(ip.c_str());
 }
 
 void renderSetupCredentials(
     const configuration::DeviceConfig &,
     const RuntimeStatus &status,
     bool) {
-    oled.setTextSize(kCompactFont);
-    if (status.setupApActive) {
-        // This is the setup recovery page. Keep its proven SSID/password
-        // layout intact; Screen 2's QR is only shown for this same live AP.
-        drawCenteredText("Wi-Fi", kCompactFont, 0, 128, 6);
-        drawCenteredText(
-            status.setupSsid,
-            largestReadableFont(status.setupSsid, 128),
-            0,
-            128,
-            18);
-        drawCenteredText("Password", kCompactFont, 0, 128, 36);
-        drawCenteredText(
-            status.setupPassword,
-            largestReadableFont(status.setupPassword, 128),
-            0,
-            128,
-            51);
-        return;
-    }
-
-    if (status.stationConnected) {
-        char rssiText[16];
-        snprintf(rssiText, sizeof(rssiText), "%ld dBm", static_cast<long>(status.stationRssi));
-        drawCenteredText("Connected", kCompactFont, 0, 128, 6);
-        drawCenteredText(
-            status.stationSsid,
-            largestReadableFont(status.stationSsid, 128),
-            0,
-            128,
-            22);
-        drawCenteredText(rssiText, kLargeFont, 0, 128, 49);
-    } else if (status.stationConfigured) {
-        drawCenteredText(
-            status.stationSsid,
-            largestReadableFont(status.stationSsid, 128),
-            0,
-            128,
-            22);
-        drawCenteredText("Disconnected", kCompactFont, 0, 128, 44);
-    } else {
-        drawCenteredText("Wi-Fi not configured", kCompactFont, 0, 128, 32);
-    }
+    // Setup-only page, reached solely while the setup AP is running, so it does
+    // not test for it. Its one job is manual transcription: the password must
+    // stay large enough to read a character at a time without misreading.
+    drawCenteredText("Wi-Fi", kCompactFont, 0, 128, 6);
+    drawCenteredText(
+        status.setupSsid,
+        largestReadableFont(status.setupSsid, 128),
+        0,
+        128,
+        18);
+    drawCenteredText("Password", kCompactFont, 0, 128, 36);
+    drawCenteredText(
+        status.setupPassword,
+        largestReadableFont(status.setupPassword, 128),
+        0,
+        128,
+        51);
 }
 
 void renderSerialPage(
@@ -496,55 +525,33 @@ void renderStatusRow(
     const RuntimeStatus &status,
     bool serialTrafficSeen) {
     char line[22];
-    const uint32_t phase = millis() % 6000;
+    const bool trafficSeen = serialTrafficSeen ||
+        status.serialToNetworkReceived != 0 || status.networkToSerialReceived != 0;
     oled.setTextSize(kCompactFont);
     if (status.serialError) {
         snprintf(line, sizeof(line), "SERIAL ERROR");
-    } else if (status.setupApActive && phase >= 4000) {
-        snprintf(line, sizeof(line), "P:%s", status.setupPassword);
-    } else {
-        configuration::StatusBar bar = configuration::statusBar(config);
-        const bool trafficSeen = serialTrafficSeen ||
-            status.serialToNetworkReceived != 0 || status.networkToSerialReceived != 0;
-        if (bar == configuration::StatusBar::Auto && trafficSeen) {
-            char rateText[12];
-            char totalText[12];
-            const bool showSerialToNetwork = (millis() / kRateSampleMs) % 2 == 0;
-            if (showSerialToNetwork) {
-                formatRate(rateText, sizeof(rateText), serialRate);
-                formatBytes(totalText, sizeof(totalText), status.serialToNetworkReceived);
-                snprintf(line, sizeof(line), "S>N %s %s", rateText, totalText);
-            } else {
-                formatRate(rateText, sizeof(rateText), networkRate);
-                formatBytes(totalText, sizeof(totalText), status.networkToSerialReceived);
-                snprintf(line, sizeof(line), "N>S %s %s", rateText, totalText);
-            }
+    } else if (trafficSeen) {
+        char rateText[12];
+        char totalText[12];
+        const bool showSerialToNetwork = (millis() / kRateSampleMs) % 2 == 0;
+        if (showSerialToNetwork) {
+            formatRate(rateText, sizeof(rateText), serialRate);
+            formatBytes(totalText, sizeof(totalText), status.serialToNetworkReceived);
+            snprintf(line, sizeof(line), "S>N %s %s", rateText, totalText);
         } else {
-            if (bar == configuration::StatusBar::Auto &&
-                    (status.stationConnected || status.tcpConnected)) {
-                bar = configuration::StatusBar::Connection;
-            } else if (bar == configuration::StatusBar::Auto) {
-                bar = configuration::StatusBar::Serial;
-            }
-
-            if (bar == configuration::StatusBar::Serial) {
-                snprintf(line, sizeof(line), "%lu %s", static_cast<unsigned long>(config.baud),
-                    configuration::framingName(static_cast<configuration::Framing>(config.framing)));
-            } else if (bar == configuration::StatusBar::Connection) {
-                snprintf(line, sizeof(line), "W:%s T:%s",
-                    status.stationConnected ? "OK" : "--",
-                    status.tcpConnected ? "OK" : "--");
-            } else {
-                if (status.setupApActive) {
-                    snprintf(line, sizeof(line), "SETUP ON");
-                } else if (status.stationConnected) {
-                    const String ip = status.stationIp.toString();
-                    snprintf(line, sizeof(line), "IP %s", ip.c_str());
-                } else {
-                    snprintf(line, sizeof(line), "NETWORK --");
-                }
-            }
+            formatRate(rateText, sizeof(rateText), networkRate);
+            formatBytes(totalText, sizeof(totalText), status.networkToSerialReceived);
+            snprintf(line, sizeof(line), "N>S %s %s", rateText, totalText);
         }
+    } else {
+        // This row labels the bytes below it. Baud and framing belong here
+        // because garbage on Live Text usually means the wrong baud, and that
+        // question can only be answered while looking at the data. Station
+        // state is deliberately absent: the Wi-Fi page owns it.
+        snprintf(line, sizeof(line), "T:%s %lu %s",
+            status.tcpConnected ? "OK" : "--",
+            static_cast<unsigned long>(config.baud),
+            configuration::framingName(static_cast<configuration::Framing>(config.framing)));
     }
     oled.setCursor(0, 0);
     oled.print(line);
@@ -645,32 +652,6 @@ void formatRate(char *destination, size_t capacity, uint32_t value) {
     }
 }
 
-void formatBuildNumber(char *destination, size_t capacity) {
-    static const char *months[] = {
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    };
-    char buildDate[12]{};
-    char buildTime[9]{};
-    strncpy(buildDate, __DATE__, sizeof(buildDate) - 1);
-    strncpy(buildTime, __TIME__, sizeof(buildTime) - 1);
-    uint8_t monthNumber = 0;
-    for (uint8_t month = 0; month < 12; ++month) {
-        if (strncmp(buildDate, months[month], 3) == 0) {
-            monthNumber = month + 1;
-            break;
-        }
-    }
-    const char dayTens = buildDate[4] == ' ' ? '0' : buildDate[4];
-    snprintf(destination, capacity, "%c%c%c%c%c%c-%c%c%c%c%c%c%c",
-        buildDate[9], buildDate[10],
-        static_cast<char>('0' + monthNumber / 10),
-        static_cast<char>('0' + monthNumber % 10),
-        dayTens, buildDate[5],
-        buildTime[0], buildTime[1], buildTime[3], buildTime[4],
-        buildTime[6], buildTime[7], buildTime[8]);
-}
-
 void formatBytes(char *destination, size_t capacity, uint64_t value) {
     if (value >= 1024ULL * 1024ULL) {
         snprintf(destination, capacity, "%.1fMB", static_cast<double>(value) / (1024.0 * 1024.0));
@@ -700,13 +681,13 @@ void renderStats(
 
     oled.setTextSize(kCompactFont);
     oled.setCursor(0, 0);
+    // Station state is not a statistic, and the Wi-Fi page owns it. The
+    // counters below are transport counters, so transport state stays.
     if (status.serialError) {
         oled.print("SERIAL ERROR");
     } else {
-        oled.print(status.stationConnected ? "WiFi OK" : "WiFi --");
+        oled.print(status.tcpConnected ? "TCP OK" : "TCP --");
     }
-    oled.setCursor(12 * 6, 0);
-    oled.print(status.tcpConnected ? "TCP OK" : "TCP --");
     oled.setCursor(0, 8);
     oled.printf("S>N %-10s", serialRateText);
     oled.setCursor(0, 16);
@@ -723,7 +704,7 @@ void renderStats(
     // Keep the full baud/framing value readable on the left. The compact
     // build string fits on the right without overwriting it, including at
     // the widest supported baud rate.
-    drawCompressedText(firmwareBuildNumber, kCompactFont, 4, 72, 56, 52);
+    drawCompressedText(build_number::kFirmware, kCompactFont, 4, 72, 56, 52);
     oled.setCursor(0, 56);
     oled.printf("U %lu/%lu/%lu/%lu", static_cast<unsigned long>(status.serialFifoOverflowErrors),
         static_cast<unsigned long>(status.serialBufferOverflowErrors),
@@ -744,7 +725,7 @@ void renderSetupQr(
     // Setup credentials are migrated to the compact form before this page is
     // shown. Version 2-L at 2x is the one supported physical layout; never
     // silently substitute a smaller or denser legacy QR. Keep it pinned to
-    // the left so the right column can carry the manual OPEN 192.168.4.1
+    // the left so the right column can carry the manual OPEN address
     // fallback.
     constexpr uint8_t qrVersion = 2;
     if (qrcode_initText(&qr, qrStorage, qrVersion, ECC_LOW, wifiPayload) < 0) {
@@ -768,10 +749,11 @@ void renderSetupQr(
 
     const int16_t textLeft = kSetupQrTextLeftPixels;
     const int16_t textWidth = kSetupQrTextWidth;
+    const String setupIp = status.setupIp.toString();
     drawCenteredText("OPEN", largestReadableFont("OPEN", textWidth), textLeft, textWidth, 24);
     drawCenteredText(
-        "192.168.4.1",
-        largestReadableFont("192.168.4.1", textWidth),
+        setupIp.c_str(),
+        largestReadableFont(setupIp.c_str(), textWidth),
         textLeft,
         textWidth,
         40);
@@ -846,7 +828,6 @@ void pushFrameIfChanged() {
 }  // namespace
 
 void begin() {
-    formatBuildNumber(firmwareBuildNumber, sizeof(firmwareBuildNumber));
     pinMode(kResetPin, OUTPUT);
     digitalWrite(kResetPin, LOW);
     delay(20);
@@ -859,7 +840,10 @@ void begin() {
     lastUserInteraction = 0;
     pageTitleVisible = false;
     pageTitleStartedAt = 0;
-    serialTrafficRedirected = false;
+    wifiTransitionObserved = false;
+    wifiTransitionConnected = false;
+    wifiTransitionUntil = 0;
+    shownWifiIcon = WifiIcon::Off;
     previousObservation = {};
     if (ready) {
         oled.clearDisplay();
@@ -870,18 +854,20 @@ void begin() {
     }
 }
 
-void handleShortClick(
-    const configuration::DeviceConfig &config,
-    bool setupApAvailable,
-    bool serialTrafficSeen) {
-    const bool wakingScreenSaver = screenSaverActive;
+bool restoreIfHidden() {
+    const bool hidden = screenSaverActive || wifiTransitionUntil != 0;
+    wifiTransitionUntil = 0;
     noteUserInteraction();
-    if (!pageInitialized) initializePage(config, setupApAvailable, serialTrafficSeen);
-    normalizePage(config, setupApAvailable, serialTrafficSeen);
-    if (wakingScreenSaver) {
-        showCurrentPageTitle();
-        return;
-    }
+    if (!hidden) return false;
+    showCurrentPageTitle();
+    return true;
+}
+
+void advanceToNextPage(
+    const configuration::DeviceConfig &config,
+    bool setupApAvailable) {
+    if (!pageInitialized) initializePage(config, setupApAvailable);
+    normalizePage(config, setupApAvailable);
     advancePage(setupApAvailable);
 }
 
@@ -923,8 +909,27 @@ void render(
 
     const bool overlayVisible = activeOverlay != prg_button::Overlay::None;
 
-    if (!pageInitialized) initializePage(config, status.setupApActive, serialTrafficSeen);
-    normalizePage(config, status.setupApActive, serialTrafficSeen);
+    if (!pageInitialized) initializePage(config, status.setupApActive);
+    normalizePage(config, status.setupApActive);
+
+    // The first observation is a baseline, not an edge: a device that is
+    // already connected when the display starts has not just connected. This
+    // owns its own flag rather than sharing pageInitialized, which
+    // advanceToNextPage can also consume.
+    if (!wifiTransitionObserved) {
+        wifiTransitionObserved = true;
+        wifiTransitionConnected = status.stationConnected;
+    }
+
+    // Expire before arming so the two cannot fight over the same deadline.
+    if (wifiTransitionUntil != 0 &&
+            static_cast<int32_t>(now - wifiTransitionUntil) >= 0) {
+        wifiTransitionUntil = 0;
+    }
+    if (status.stationConnected != wifiTransitionConnected) {
+        wifiTransitionConnected = status.stationConnected;
+        wifiTransitionUntil = now + kWifiTransitionMs;
+    }
 
     if (config.screenSaverSeconds == 0) {
         screenSaverActive = false;
@@ -935,7 +940,12 @@ void render(
         screenSaverActive = true;
     }
 
-    if (screenSaverActive && !overlayVisible && !status.serialError) {
+    // A station transition lights a blanked panel for the notification only. It
+    // deliberately does not touch lastUserInteraction: a network event is not
+    // user interaction, so the panel blanks again the moment the deadline
+    // passes, and an unstable link cannot hold the display on.
+    if (screenSaverActive && !overlayVisible && !status.serialError &&
+            wifiTransitionUntil == 0) {
         oled.clearDisplay();
         pushFrameIfChanged();
         return;
@@ -953,6 +963,8 @@ void render(
         renderOverlay(activeOverlay, countdown);
     } else if (status.serialError) {
         renderSerialError();
+    } else if (wifiTransitionUntil != 0) {
+        renderWifiState(config, status, serialTrafficSeen);
     } else if (titleShowing) {
         renderPageTitle(currentPage);
     } else {
