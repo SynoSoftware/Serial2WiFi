@@ -33,7 +33,6 @@ constexpr int16_t kSetupQrTextWidth = 128 - kSetupQrTextLeftPixels;
 
 Adafruit_SSD1306 oled(128, 64, &Wire, kResetPin);
 bool ready = false;
-bool displayHasContent = false;
 uint32_t lastRefresh = 0;
 uint32_t lastRateSample = 0;
 uint64_t lastSerialReceived = 0;
@@ -832,6 +831,18 @@ void renderOverlay(
     }
 }
 
+// A full-frame I2C push blocks loop() for roughly 25 ms, and most refreshes
+// redraw exactly the pixels the panel already shows. The shadow records the
+// panel's current content, so an unchanged frame costs a 1 KB compare
+// instead of the transfer.
+uint8_t panelFrame[128 * 64 / 8]{};
+
+void pushFrameIfChanged() {
+    if (memcmp(oled.getBuffer(), panelFrame, sizeof(panelFrame)) == 0) return;
+    oled.display();
+    memcpy(panelFrame, oled.getBuffer(), sizeof(panelFrame));
+}
+
 }  // namespace
 
 void begin() {
@@ -884,6 +895,10 @@ PageAction currentPageAction() {
     return pageDescription(currentPage).action;
 }
 
+bool renderDue() {
+    return ready && (renderRequested || millis() - lastRefresh >= kRefreshMs);
+}
+
 void render(
     const configuration::DeviceConfig &config,
     prg_button::Overlay activeOverlay,
@@ -921,11 +936,8 @@ void render(
     }
 
     if (screenSaverActive && !overlayVisible && !status.serialError) {
-        if (displayHasContent) {
-            oled.clearDisplay();
-            oled.display();
-            displayHasContent = false;
-        }
+        oled.clearDisplay();
+        pushFrameIfChanged();
         return;
     }
 
@@ -946,8 +958,7 @@ void render(
     } else {
         description.show(config, status, serialTrafficSeen);
     }
-    oled.display();
-    displayHasContent = true;
+    pushFrameIfChanged();
 }
 
 }  // namespace oled_display

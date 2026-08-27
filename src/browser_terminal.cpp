@@ -18,11 +18,13 @@ namespace {
 constexpr size_t kMaxClients = 1;
 // Terminal TX is admitted as one bounded frame so the UART path never needs
 // an unbounded message buffer or a blocking WebSocket callback.
-constexpr size_t kReceiveBufferSize = 128;
-constexpr size_t kMaxTerminalPayload = kReceiveBufferSize - 6;
+constexpr size_t kReceiveBufferSize = 256;
+// Payloads of 126 bytes and above carry the 2-byte extended length, so a
+// masked frame's header is 8 bytes, not 6; the cap must leave room for it.
+constexpr size_t kMaxTerminalPayload = kReceiveBufferSize - 8;
 constexpr size_t kSerialChunkSize = 256;
 static_assert(
-    kMaxTerminalPayload + 6 == kReceiveBufferSize,
+    kMaxTerminalPayload + 8 == kReceiveBufferSize,
     "Terminal receive payload must fit the fixed WebSocket frame buffer.");
 constexpr char kWebSocketGuid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 

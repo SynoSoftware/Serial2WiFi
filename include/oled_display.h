@@ -35,6 +35,10 @@ void handleShortClick(
     bool serialTrafficSeen);
 void noteUserInteraction();
 PageAction currentPageAction();
+// True when render() would actually redraw. loop() checks this first so the
+// status gathering that feeds render() runs at the refresh cadence, not on
+// every loop pass.
+bool renderDue();
 void render(
     const configuration::DeviceConfig &config,
     prg_button::Overlay overlay,

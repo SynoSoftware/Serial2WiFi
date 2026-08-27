@@ -18,15 +18,19 @@
 namespace network_transport {
 namespace {
 
-constexpr size_t kQueueCapacity = 32 * 1024;
+// Serial→network absorbs UART bursts while TCP is slow (320 ms at 1 Mbaud).
+// Network→serial drains at the configured baud and TCP backpressure already
+// throttles the sender, so it only needs to bridge scheduling gaps.
+constexpr size_t kSerialToNetworkCapacity = 32 * 1024;
+constexpr size_t kNetworkToSerialCapacity = 8 * 1024;
 constexpr size_t kChunkSize = 1024;
 // A browser frame is admitted only when it fits; this bounds terminal TX
 // without dropping the suffix of an admitted frame.
 constexpr size_t kTerminalTxCapacity = 1024;
 constexpr uint32_t kReconnectDelays[] = {1000, 2000, 5000, 10000};
 
-uint8_t serialToNetworkStorage[kQueueCapacity];
-uint8_t networkToSerialStorage[kQueueCapacity];
+uint8_t serialToNetworkStorage[kSerialToNetworkCapacity];
+uint8_t networkToSerialStorage[kNetworkToSerialCapacity];
 uint8_t terminalTxStorage[kTerminalTxCapacity];
 transport_buffer::Buffer serialToNetworkQueue;
 transport_buffer::Buffer networkToSerialQueue;
@@ -218,17 +222,23 @@ void queueNetworkToSerial(
     const uint8_t *data,
     size_t length,
     uint32_t workBoundaryGeneration) {
+    bool queued = false;
     portENTER_CRITICAL(&boundaryLock);
     if (transportBoundaryActive ||
             workBoundaryGeneration != transportBoundaryGeneration) {
         transport_buffer::recordDropped(networkToSerialQueue, length);
     } else {
         transport_buffer::push(networkToSerialQueue, data, length);
+        queued = true;
+    }
+    portEXIT_CRITICAL(&boundaryLock);
+    // History is display evidence only; recording it outside the boundary
+    // lock keeps the interrupts-off window short.
+    if (queued) {
         for (size_t i = 0; i < length; ++i) {
             display_history::append(data[i], display_history::Direction::NetworkToSerial);
         }
     }
-    portEXIT_CRITICAL(&boundaryLock);
 }
 
 size_t popPending(
@@ -328,6 +338,7 @@ uint32_t reconnectDelay(size_t attempt) {
 void networkTask(void *) {
     WiFiClient client;
     uint32_t seenGeneration = currentGeneration();
+    configuration::DeviceConfig config = configuration::snapshot();
     uint16_t listeningPort = 0;
     bool listenerStarted = false;
     uint32_t nextAttemptAt = 0;
@@ -341,8 +352,6 @@ void networkTask(void *) {
 
     for (;;) {
         const uint32_t now = millis();
-        const configuration::DeviceConfig config = configuration::snapshot();
-        const wifi_access::Snapshot wifi = wifi_access::snapshot();
         const uint32_t workBoundaryGeneration = currentBoundaryGeneration();
 
         if (pendingLength != 0 && pendingBoundaryGeneration != workBoundaryGeneration) {
@@ -366,6 +375,10 @@ void networkTask(void *) {
             listenerStarted = false;
             listeningPort = 0;
             seenGeneration = currentGeneration();
+            // Every configuration field this task reads changes only together
+            // with a generation bump, so this is the only re-snapshot the
+            // steady state needs.
+            config = configuration::snapshot();
             nextAttemptAt = now;
             attempt = 0;
             dnsRequested = false;
@@ -389,7 +402,7 @@ void networkTask(void *) {
         }
 
         if (listenMode) {
-            if (!wifi.stationConnected) {
+            if (!wifi_access::stationConnected()) {
                 client.stop();
                 if (listenerStarted) tcpServer.stop();
                 listenerStarted = false;
@@ -452,7 +465,7 @@ void networkTask(void *) {
                 listeningPort = 0;
             }
 
-            if (!wifi.stationConnected) {
+            if (!wifi_access::stationConnected()) {
                 client.stop();
                 portENTER_CRITICAL(&boundaryLock);
                 tcpConnectionWaitingForTerminalTx = false;
@@ -677,8 +690,8 @@ void serialTxTask(void *) {
 }  // namespace
 
 void begin() {
-    transport_buffer::initialize(serialToNetworkQueue, serialToNetworkStorage, kQueueCapacity);
-    transport_buffer::initialize(networkToSerialQueue, networkToSerialStorage, kQueueCapacity);
+    transport_buffer::initialize(serialToNetworkQueue, serialToNetworkStorage, kSerialToNetworkCapacity);
+    transport_buffer::initialize(networkToSerialQueue, networkToSerialStorage, kNetworkToSerialCapacity);
     transport_buffer::initialize(terminalTxQueue, terminalTxStorage, kTerminalTxCapacity);
     const BaseType_t networkTaskResult = xTaskCreatePinnedToCore(
         networkTask, "networkTask", 8192, nullptr, 2, nullptr, 0);

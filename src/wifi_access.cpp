@@ -226,8 +226,7 @@ void begin() {
 }
 
 void service() {
-    const configuration::DeviceConfig config = configuration::snapshot();
-    const bool connected = stationIsConfigured && WiFi.status() == WL_CONNECTED;
+    const bool connected = stationConnected();
     const uint32_t now = millis();
 
     // The AP can disappear independently of this state machine. Clear the
@@ -280,7 +279,7 @@ void service() {
         startAp();
     }
     if (static_cast<int32_t>(now - stationRetryAt) >= 0) {
-        beginStation(config);
+        beginStation(configuration::snapshot());
     }
 }
 
@@ -309,13 +308,17 @@ void configurationChanged(const configuration::DeviceConfig &next) {
     beginStation(next);
 }
 
+bool stationConnected() {
+    return stationIsConfigured && WiFi.status() == WL_CONNECTED;
+}
+
 Snapshot snapshot() {
     Snapshot result{};
     // The OLED's QR must describe the driver-visible AP, never saved intent
     // or an earlier softAP() call whose interface has since disappeared.
     result.setupApActive = WiFi.AP.started();
     result.stationConfigured = stationIsConfigured;
-    result.stationConnected = stationIsConfigured && WiFi.status() == WL_CONNECTED;
+    result.stationConnected = stationConnected();
     result.stationRssi = result.stationConnected ? WiFi.RSSI() : 0;
     strncpy(result.stationSsid, stationSsid, sizeof(result.stationSsid) - 1);
     strncpy(result.setupSsid, deviceName, sizeof(result.setupSsid) - 1);

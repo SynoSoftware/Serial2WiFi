@@ -35,6 +35,7 @@ struct ScanResult {
     bool clearIdentity();
     void configurationChanged(const configuration::DeviceConfig &next);
     Snapshot snapshot();
+    bool stationConnected();
     const char *mdnsHost();
     bool requestFromSetupAp(const WiFiClient &client);
     bool requestFromLocalInterface(const WiFiClient &client);

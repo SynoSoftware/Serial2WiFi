@@ -165,11 +165,13 @@ void loop() {
     wifi_access::service();
     http_server::service();
     browser_terminal::service();
-    oled_display::render(
-        configuration::snapshot(),
-        prg_button::overlay(),
-        prg_button::resetCountdown(),
-        serial_port::snapshot().trafficSeen,
-        runtimeStatus());
+    if (oled_display::renderDue()) {
+        oled_display::render(
+            configuration::snapshot(),
+            prg_button::overlay(),
+            prg_button::resetCountdown(),
+            serial_port::snapshot().trafficSeen,
+            runtimeStatus());
+    }
     delay(1);
 }

@@ -1,5 +1,6 @@
 #include "transport_buffer.h"
 
+#include <cstring>
 #include <freertos/FreeRTOS.h>
 
 namespace transport_buffer {
@@ -13,21 +14,41 @@ void initialize(Buffer &buffer, uint8_t *storage, size_t capacity) {
     buffer.lock = portMUX_INITIALIZER_UNLOCKED;
 }
 
+// These run inside interrupts-off critical sections on the forwarding path,
+// so bytes move with at most two memcpy segments instead of per-byte loops.
+
+namespace {
+
+// Appends at the tail. The caller holds buffer.lock.
+void copyIn(Buffer &buffer, const uint8_t *data, size_t length) {
+    const size_t tail = (buffer.head + buffer.count) % buffer.capacity;
+    const size_t firstSegment = min(length, buffer.capacity - tail);
+    memcpy(buffer.storage + tail, data, firstSegment);
+    memcpy(buffer.storage, data + firstSegment, length - firstSegment);
+    buffer.count += length;
+}
+
+}  // namespace
+
 size_t push(Buffer &buffer, const uint8_t *data, size_t length) {
     if (data == nullptr || length == 0) return 0;
     portENTER_CRITICAL(&buffer.lock);
+    // A full buffer keeps the newest bytes: the oldest stored bytes give way
+    // first, and input larger than the whole buffer sheds its own oldest bytes.
     size_t dropped = 0;
-    for (size_t i = 0; i < length; ++i) {
-        if (buffer.count == buffer.capacity) {
-            buffer.head = (buffer.head + 1) % buffer.capacity;
-            --buffer.count;
-            ++buffer.dropped;
-            ++dropped;
-        }
-        const size_t tail = (buffer.head + buffer.count) % buffer.capacity;
-        buffer.storage[tail] = data[i];
-        ++buffer.count;
+    if (length >= buffer.capacity) {
+        dropped = buffer.count + (length - buffer.capacity);
+        data += length - buffer.capacity;
+        length = buffer.capacity;
+        buffer.head = 0;
+        buffer.count = 0;
+    } else if (buffer.count + length > buffer.capacity) {
+        dropped = buffer.count + length - buffer.capacity;
+        buffer.head = (buffer.head + dropped) % buffer.capacity;
+        buffer.count -= dropped;
     }
+    copyIn(buffer, data, length);
+    buffer.dropped += dropped;
     portEXIT_CRITICAL(&buffer.lock);
     return dropped;
 }
@@ -39,11 +60,7 @@ bool pushIfFits(Buffer &buffer, const uint8_t *data, size_t length) {
         portEXIT_CRITICAL(&buffer.lock);
         return false;
     }
-    for (size_t i = 0; i < length; ++i) {
-        const size_t tail = (buffer.head + buffer.count) % buffer.capacity;
-        buffer.storage[tail] = data[i];
-        ++buffer.count;
-    }
+    copyIn(buffer, data, length);
     portEXIT_CRITICAL(&buffer.lock);
     return true;
 }
@@ -52,10 +69,10 @@ size_t pop(Buffer &buffer, uint8_t *destination, size_t capacity) {
     if (destination == nullptr || capacity == 0) return 0;
     portENTER_CRITICAL(&buffer.lock);
     const size_t copied = min(capacity, buffer.count);
-    for (size_t i = 0; i < copied; ++i) {
-        destination[i] = buffer.storage[buffer.head];
-        buffer.head = (buffer.head + 1) % buffer.capacity;
-    }
+    const size_t firstSegment = min(copied, buffer.capacity - buffer.head);
+    memcpy(destination, buffer.storage + buffer.head, firstSegment);
+    memcpy(destination + firstSegment, buffer.storage, copied - firstSegment);
+    buffer.head = (buffer.head + copied) % buffer.capacity;
     buffer.count -= copied;
     portEXIT_CRITICAL(&buffer.lock);
     return copied;
