@@ -142,6 +142,43 @@ Do not add Node, Bun, React, TypeScript, Fluent libraries, CDNs, or frontend bui
 
 Implement the specified Fluent interaction and accessibility behavior directly.
 
+### Buttons
+
+A button is a Windows command. Label it the way Windows labels it.
+
+* Use the Windows word. `Sign in`, not `Login`. `Retry`, not `Try again`. `Forget`, not `Forget network`. `Add`, not `Enter manually`. If Windows or the Microsoft Writing Style Guide has a word for the command, that word wins.
+* One word. `Save`, `Cancel`, `Connect`, `Retry`, `Scan`, `Add`, `Change`, `Forget`, `Back`, `Done`, `Close`, `Send`, `Clear`, `Pause`, `Resume`, `Create`.
+* Two words only where the Microsoft term is two words and has no one-word form: `Sign in`, `Sign out`. Never to disambiguate: the heading, the row label, or `aria-label` names the object, and the button names the command.
+* Every command button is one size, set once by the `min-width` on the `button` rule in `style.css`. Only buttons that are not commands opt out: icon-only buttons, tabs, and list rows. The terminal toolbar keeps Fluent's smaller command-bar scale, and every button in it is one size too. A label that changes at run time must not change the button's width.
+* Every button carries a Lucide icon. A button with no label is icon-only and needs an `aria-label`.
+* One icon means one thing. Where a button's label changes at run time, its icon changes with it, chosen in the same expression so the two cannot drift.
+* Icons come from lucide.dev. Add the symbol to the sprite in `index.html` with the path data from the Lucide source. Never draw one by hand.
+
+### Product text
+
+Follow the Microsoft Writing Style Guide.
+
+* Sentence case. Second person. Plain verbs.
+* Say what happened, then what the user does about it. One idea per sentence.
+* Name the thing on screen: the network, the address, the setup network. Never "here", "either", or "afterwards" where a noun fits.
+* State a rule the firmware follows, not a promise the page cannot keep.
+* `Wi-Fi`, `sign in`, `sign out`. Not `WiFi`, `login`, `logout`.
+
+### Localization
+
+Locale catalogs are the sole authority for frontend-owned user-facing text.
+
+* Never hardcode visible or accessibility text in HTML, JavaScript, or CSS. This includes labels, buttons, headings, notices, errors, validation messages, placeholders, tooltips, document titles, `aria-label` values, and live-region announcements.
+* Add or change every supported locale in the same change. Every catalog must contain exactly the same keys and placeholders.
+* Keep complete messages in the catalogs. Never build sentences by joining translated fragments.
+* Catalog values are text, not HTML. Insert them with `textContent` or the appropriate DOM property or attribute, never `innerHTML`.
+* Generated locale assets are derived artifacts, not a second authority. The generation command must be deterministic, and every generated asset referenced by the page must exist in `data/` and be current before the change is complete.
+* Missing catalogs, missing keys, placeholder mismatches, stale generated assets, or frontend-owned hardcoded text must fail an automated verification check. Never silently render an empty string or expose a localization key to the user.
+* Define one explicit default locale and one fallback rule. Unsupported or unavailable locales fall back to the complete default catalog.
+* Set the document `lang` attribute to the active locale.
+* Each visible text element must add information. Do not repeat the same action or state in nearby headings, descriptions, notices, or buttons; remove redundant text.
+* Protocol values, API identifiers, user-provided content, and terminal data are not localized.
+
 ## Scope
 
 Do not add:
