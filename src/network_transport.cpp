@@ -9,7 +9,6 @@
 #include <lwip/sockets.h>
 
 #include "configuration.h"
-#include "display_history.h"
 #include "browser_terminal.h"
 #include "serial_port.h"
 #include "transport_buffer.h"
@@ -222,23 +221,14 @@ void queueNetworkToSerial(
     const uint8_t *data,
     size_t length,
     uint32_t workBoundaryGeneration) {
-    bool queued = false;
     portENTER_CRITICAL(&boundaryLock);
     if (transportBoundaryActive ||
             workBoundaryGeneration != transportBoundaryGeneration) {
         transport_buffer::recordDropped(networkToSerialQueue, length);
     } else {
         transport_buffer::push(networkToSerialQueue, data, length);
-        queued = true;
     }
     portEXIT_CRITICAL(&boundaryLock);
-    // History is display evidence only; recording it outside the boundary
-    // lock keeps the interrupts-off window short.
-    if (queued) {
-        for (size_t i = 0; i < length; ++i) {
-            display_history::append(data[i], display_history::Direction::NetworkToSerial);
-        }
-    }
 }
 
 size_t popPending(
@@ -642,6 +632,8 @@ void serialTxTask(void *) {
                 endSerialIo();
             }
             addNetworkToSerialForwarded(written);
+            browser_terminal::onSerialTraffic(
+                browser_terminal::Direction::ToSerial, pending, written);
             finishPendingSend(
                 networkToSerialQueue,
                 pending,
@@ -669,6 +661,10 @@ void serialTxTask(void *) {
             // before it began and must finish through the sole UART TX path.
             written = serial_port::writeBytes(terminalPending, terminalPendingLength);
             addTerminalToSerialReceived(written);
+            // Reported before the memmove, while terminalPending still holds
+            // the bytes that went out.
+            browser_terminal::onSerialTraffic(
+                browser_terminal::Direction::ToSerial, terminalPending, written);
             if (written != 0) {
                 memmove(
                     terminalPending,
@@ -711,7 +707,8 @@ void serialBytesReceived(const uint8_t *data, size_t length) {
         transport_buffer::push(serialToNetworkQueue, data, length);
     }
     portEXIT_CRITICAL(&boundaryLock);
-    browser_terminal::onSerialData(data, length);
+    browser_terminal::onSerialTraffic(
+        browser_terminal::Direction::FromSerial, data, length);
 }
 
 bool submitTerminalToSerial(const uint8_t *data, size_t length) {

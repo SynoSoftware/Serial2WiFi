@@ -171,6 +171,13 @@ size_t writeBytes(const uint8_t *data, size_t length) {
     const size_t toWrite = available > 0 ?
         min(length, static_cast<size_t>(available)) : 0;
     const size_t written = toWrite == 0 ? 0 : Serial.write(data, toWrite);
+    // The sole UART TX path is the one place that knows what the UART actually
+    // accepted, and the only point both the transport queue and the browser
+    // terminal pass through. Appending here, still inside writeInProgress,
+    // keeps a reconfiguration's history clear from overtaking these bytes.
+    for (size_t i = 0; i < written; ++i) {
+        display_history::append(data[i], display_history::Direction::NetworkToSerial);
+    }
     portENTER_CRITICAL(&stateMux);
     writeInProgress = false;
     portEXIT_CRITICAL(&stateMux);

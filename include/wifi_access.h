@@ -13,10 +13,27 @@ enum class ScanState : uint8_t {
     Failed,
 };
 
+// Why the station is not on the network. The radio reports this; without it
+// a wrong password and an absent access point look identical to the user.
+enum class StationState : uint8_t {
+    Unconfigured = 0,
+    Connecting,
+    Connected,
+    BadPassword,
+    NotFound,
+    Failed,
+};
+
 struct Snapshot {
     bool setupApActive;
     bool stationConfigured;
     bool stationConnected;
+    StationState stationState;
+    // Sticky verdict on the last credentials the user saved. The live state
+    // returns to connected or unconfigured once the failed credentials are
+    // withdrawn, so without this the reason for the withdrawal is lost before
+    // it can be shown.
+    StationState provisioningFailure;
     int32_t stationRssi;
     char stationSsid[33];
     char setupSsid[33];
@@ -33,6 +50,10 @@ struct ScanResult {
 
     void begin();
     void service();
+    // True once, when credentials have been rejected often enough to be judged
+    // wrong. The caller withdraws them; they never became a working config.
+    bool takeCredentialRejection();
+    void clearProvisioningFailure();
     bool clearIdentity();
     void configurationChanged(const configuration::DeviceConfig &next);
     Snapshot snapshot();

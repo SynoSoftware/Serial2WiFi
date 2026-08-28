@@ -116,6 +116,18 @@ void loadFrontendBuildNumber() {
     }
 }
 
+const char *stationStateName(wifi_access::StationState state) {
+    switch (state) {
+        case wifi_access::StationState::Connecting: return "connecting";
+        case wifi_access::StationState::Connected: return "connected";
+        case wifi_access::StationState::BadPassword: return "bad_password";
+        case wifi_access::StationState::NotFound: return "not_found";
+        case wifi_access::StationState::Failed: return "failed";
+        case wifi_access::StationState::Unconfigured: break;
+    }
+    return "unconfigured";
+}
+
 bool fromSetupAp() {
     return wifi_access::requestFromSetupAp(server.client());
 }
@@ -309,6 +321,9 @@ void handleStatus() {
     body += ",\"frontendBuild\":\"" + escaped(frontendBuildNumber) + "\"";
     body += ",\"wifiConfigured\":" + String(wifi.stationConfigured ? "true" : "false");
     body += ",\"wifiConnected\":" + String(wifi.stationConnected ? "true" : "false");
+    body += ",\"wifiState\":\"" + String(stationStateName(wifi.stationState)) + "\"";
+    body += ",\"wifiProvisionFailure\":\"" +
+        String(stationStateName(wifi.provisioningFailure)) + "\"";
     body += ",\"wifiApActive\":" + String(wifi.setupApActive ? "true" : "false");
     body += ",\"setupSsid\":\"" + escaped(wifi.setupSsid) + "\"";
     body += ",\"stationIp\":\"" + escaped(ipString(wifi.stationIp)) + "\"";

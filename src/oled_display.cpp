@@ -356,6 +356,15 @@ void renderWifiState(
         drawCenteredText("Wi-Fi not configured", kCompactFont, 0, 128, 32);
         return;
     }
+    if (status.provisioningFailure == wifi_access::StationState::BadPassword) {
+        // The one failure the user must act on, and the display may be the
+        // only channel telling them: the device is off the network, so the web
+        // UI is reachable solely over the setup AP they have to be told about.
+        drawCenteredText("Wi-Fi password", kCompactFont, 0, 128, 16);
+        drawCenteredText("rejected", kCompactFont, 0, 128, 28);
+        drawCenteredText(status.setupSsid, kCompactFont, 0, 128, 44);
+        return;
+    }
     if (!status.stationConnected) {
         // The crossed-out artwork spans the full 64px height. There is no
         // margin to label, and clipping the icon to make room would cost more

@@ -113,6 +113,19 @@ void serviceButtonActions() {
     }
 }
 
+// Credentials that never associated are withdrawn rather than left as the
+// device's configuration. For a first setup that leaves it unconfigured, which
+// is the same outcome; for a re-configuration it stops a typo from displacing
+// a network that worked. Either way the setup AP stays up and the verdict is
+// reported until new credentials are saved.
+void withdrawRejectedCredentials() {
+    configuration::DeviceConfig candidate = configuration::snapshot();
+    candidate.ssid[0] = 0;
+    candidate.wifiPassword[0] = 0;
+    candidate.wifiSecurity = static_cast<uint8_t>(configuration::WifiSecurity::Unset);
+    configuration::commit(candidate, applyConfiguration, nullptr);
+}
+
 oled_display::RuntimeStatus runtimeStatus() {
     const wifi_access::Snapshot wifi = wifi_access::snapshot();
     const network_transport::Snapshot transport = network_transport::snapshot();
@@ -128,6 +141,7 @@ oled_display::RuntimeStatus runtimeStatus() {
     strncpy(result.setupSsid, wifi.setupSsid, sizeof(result.setupSsid) - 1);
     strncpy(result.setupPassword, wifi.setupPassword, sizeof(result.setupPassword) - 1);
     result.setupIp = wifi.setupIp;
+    result.provisioningFailure = wifi.provisioningFailure;
     result.stationIp = wifi.stationIp;
     result.serialToNetworkReceived = transport.serialToNetworkReceived;
     result.serialToNetworkDropped = transport.serialToNetworkDropped;
@@ -160,6 +174,7 @@ void loop() {
     prg_button::service();
     serviceButtonActions();
     wifi_access::service();
+    if (wifi_access::takeCredentialRejection()) withdrawRejectedCredentials();
     http_server::service();
     browser_terminal::service();
     if (oled_display::renderDue()) {

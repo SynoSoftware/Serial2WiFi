@@ -21,6 +21,9 @@
     --terminal-text: #242424;
     --terminal-muted: #616161;
     --terminal-line: #d6d6d6;
+    /* Bytes going to the serial device. A hue, not a dimming: what the other
+       side sent is evidence too, not secondary text. */
+    --terminal-sent: #0f6cbd;
     --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23616161' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
     --control-height: 36px;
     font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -47,6 +50,7 @@
     --terminal-text: #f5f5f5;
     --terminal-muted: #b7b7b7;
     --terminal-line: #37393d;
+    --terminal-sent: #479ef5;
 }
 
 * { box-sizing: border-box; }
@@ -252,6 +256,7 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .toolbar-button { width: auto; min-height: var(--control-height); padding: 5px 10px; border: 0; font-size: .8rem; }
 .toolbar-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .terminal-output { width: 100%; height: clamp(300px, 54vw, 500px); margin: 0; overflow: auto; padding: 14px; color: var(--terminal-text); background: var(--terminal-bg); border: 0; border-radius: 0; font-family: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; tab-size: 4; white-space: pre-wrap; cursor: text; }
+.terminal-sent { color: var(--terminal-sent); }
 .terminal-output.terminal-hex { overflow-wrap: normal; white-space: pre; }
 .terminal-output:empty::before { color: var(--terminal-muted); content: "Waiting for serial data..."; }
 .terminal-output:focus-visible { outline-color: var(--accent); outline-offset: -3px; }

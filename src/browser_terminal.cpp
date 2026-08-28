@@ -23,6 +23,8 @@ constexpr size_t kReceiveBufferSize = 256;
 // masked frame's header is 8 bytes, not 6; the cap must leave room for it.
 constexpr size_t kMaxTerminalPayload = kReceiveBufferSize - 8;
 constexpr size_t kSerialChunkSize = 256;
+// Every observation frame is prefixed with its Direction byte.
+constexpr size_t kOutgoingPayloadSize = kSerialChunkSize + 1;
 static_assert(
     kMaxTerminalPayload + 8 == kReceiveBufferSize,
     "Terminal receive payload must fit the fixed WebSocket frame buffer.");
@@ -34,15 +36,17 @@ struct Client {
     size_t receiveLength;
     size_t fragmentedLength;
     bool binaryMessageInProgress;
-    uint8_t outgoingFrame[kSerialChunkSize + 10];
+    uint8_t outgoingFrame[kOutgoingPayloadSize + 10];
     size_t outgoingLength;
     size_t outgoingOffset;
     bool active;
 };
 
 Client clients[kMaxClients];
-uint8_t pendingSerialData[kSerialChunkSize];
-size_t pendingSerialLength = 0;
+// Staged with its Direction byte already in place, so delivery sends one
+// contiguous frame and no second copy is needed.
+uint8_t pendingFrame[kOutgoingPayloadSize];
+size_t pendingFrameLength = 0;
 portMUX_TYPE pendingLock = portMUX_INITIALIZER_UNLOCKED;
 
 enum class SendResult : uint8_t {
@@ -73,7 +77,7 @@ SendResult sendFrame(
     const uint8_t *payload,
     size_t length) {
     if (payload == nullptr && length != 0) return SendResult::Broken;
-    if (length > kSerialChunkSize) return SendResult::Broken;
+    if (length > kOutgoingPayloadSize) return SendResult::Broken;
     if (client.outgoingLength != 0) return SendResult::Dropped;
 
     size_t headerLength = 2;
@@ -281,20 +285,20 @@ void serviceClient(Client &client) {
 }
 
 void deliverPendingSerialData() {
-    uint8_t data[kSerialChunkSize];
+    uint8_t frame[kOutgoingPayloadSize];
     size_t length = 0;
     portENTER_CRITICAL(&pendingLock);
-    if (pendingSerialLength != 0) {
-        length = pendingSerialLength;
-        memcpy(data, pendingSerialData, length);
-        pendingSerialLength = 0;
+    if (pendingFrameLength != 0) {
+        length = pendingFrameLength;
+        memcpy(frame, pendingFrame, length);
+        pendingFrameLength = 0;
     }
     portEXIT_CRITICAL(&pendingLock);
     if (length == 0) return;
 
     for (Client &client : clients) {
         if (!client.active) continue;
-        const SendResult result = sendFrame(client, 0x02, data, length);
+        const SendResult result = sendFrame(client, 0x02, frame, length);
         if (result == SendResult::Broken) closeClient(client);
     }
 }
@@ -311,7 +315,7 @@ void begin() {
         client.active = false;
     }
     portENTER_CRITICAL(&pendingLock);
-    pendingSerialLength = 0;
+    pendingFrameLength = 0;
     portEXIT_CRITICAL(&pendingLock);
 }
 
@@ -364,15 +368,21 @@ void service() {
     for (Client &client : clients) serviceClient(client);
 }
 
-void onSerialData(const uint8_t *data, size_t length) {
-    if (data == nullptr || length == 0 || length > kSerialChunkSize) return;
+void onSerialTraffic(Direction direction, const uint8_t *data, size_t length) {
+    if (data == nullptr || length == 0) return;
+    // A UART write can exceed one staged frame. Showing its start is worth more
+    // to an operator than showing nothing.
+    const size_t staged = min(length, kSerialChunkSize);
 
     // One bounded staging frame keeps WebSocket delivery out of the UART callback.
     // A busy browser loses only its observation copy; TCP and UART capture continue.
+    // Holding one frame at a time also keeps the two directions in the order
+    // they happened, which is what makes the browser view a conversation.
     portENTER_CRITICAL(&pendingLock);
-    if (pendingSerialLength == 0) {
-        memcpy(pendingSerialData, data, length);
-        pendingSerialLength = length;
+    if (pendingFrameLength == 0) {
+        pendingFrame[0] = static_cast<uint8_t>(direction);
+        memcpy(pendingFrame + 1, data, staged);
+        pendingFrameLength = staged + 1;
     }
     portEXIT_CRITICAL(&pendingLock);
 }

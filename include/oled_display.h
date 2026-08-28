@@ -1,6 +1,7 @@
 #pragma once
 
 #include "configuration.h"
+#include "wifi_access.h"
 #include "prg_button.h"
 
 namespace oled_display {
@@ -15,6 +16,7 @@ struct RuntimeStatus {
     bool serialError;
     char setupSsid[33];
     char setupPassword[17];
+    wifi_access::StationState provisioningFailure;
     IPAddress setupIp;
     IPAddress stationIp;
     uint64_t serialToNetworkReceived;

@@ -21,6 +21,12 @@ const state = {
     authDown: false,
     configDown: false
 };
+// Not a boolean, so /mock/state cannot set it; assign it directly instead:
+//   curl -X POST -d "wifiState=bad_password" http://127.0.0.1:4173/mock/wifi
+state.wifiState = 'connected';
+// 'bad_password' with an ssid still set is a network that used to work;
+// with the ssid cleared it is credentials that never did.
+state.wifiProvisionFailure = 'unconfigured';
 let scanPolls = null;
 let config = {
     ssid: 'Workshop',
@@ -92,10 +98,12 @@ function status() {
         firmwareBuild,
         frontendBuild: frontendBuild(),
         wifiConfigured: Boolean(config.ssid),
-        wifiConnected: Boolean(config.ssid),
+        wifiConnected: state.wifiState === 'connected' && Boolean(config.ssid),
+        wifiState: config.ssid ? state.wifiState : 'unconfigured',
+        wifiProvisionFailure: state.wifiProvisionFailure,
         wifiApActive: true,
         setupSsid: 'S2W-B9',
-        stationIp: config.ssid ? '10.0.88.184' : '',
+        stationIp: state.wifiState === 'connected' && config.ssid ? '10.0.88.184' : '',
         // Derived from the saved record, like the firmware. Hardcoding these
         // made the runtime labels report a state no save could ever change.
         tcpMode: config.tcpMode,
@@ -114,6 +122,13 @@ function status() {
 
 http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1:4173');
+    if (request.method === 'POST' && url.pathname === '/mock/wifi') {
+        const form = await readForm(request);
+        if (form.has('wifiState')) state.wifiState = form.get('wifiState');
+        if (form.has('wifiProvisionFailure')) state.wifiProvisionFailure = form.get('wifiProvisionFailure');
+        if (form.has('ssid')) config.ssid = form.get('ssid');
+        return json(response, 200, { wifiState: state.wifiState });
+    }
     if (request.method === 'POST' && url.pathname === '/mock/state') {
         const form = await readForm(request);
         for (const key of Object.keys(state)) {

@@ -10,6 +10,37 @@
 namespace wifi_access {
 namespace {
 
+// The radio delivers a disconnect reason and nothing was listening for it, so
+// every failure looked the same from the outside. Written from the Wi-Fi event
+// task and read from the main loop, hence volatile.
+volatile uint8_t lastDisconnectReason = 0;
+volatile bool sawDisconnect = false;
+volatile uint8_t credentialFailures = 0;
+bool credentialRejectionPending = false;
+StationState provisioningFailure = StationState::Unconfigured;
+// Whether the credentials now stored have ever associated. It decides what a
+// rejection means: credentials that never worked were mistyped and are
+// withdrawn, while credentials that did work say the network changed its
+// password, so the network is kept and the user is asked to update it.
+bool credentialsProven = false;
+uint32_t credentialsLatchedAt = 0;
+
+// A rejected password is a configuration error, not a transient one: retrying
+// it cannot succeed until someone edits the credentials. Retrying anyway costs
+// a failed authentication against the router every few seconds, which some
+// routers answer by blocking the client, and every attempt shares the radio
+// with the setup AP the user needs in order to fix it. So the station latches
+// after a few consecutive rejections and waits for new credentials.
+//
+// A few, not one: a correct password can still lose a handshake on a congested
+// channel, and latching on a single timeout would accuse the user wrongly.
+constexpr uint8_t kCredentialFailureLimit = 3;
+// A network that used to work may be given its old password back, and this
+// device can be somewhere awkward to reach. So a proven network is retried,
+// but rarely: four attempts an hour cannot trip a router's lockout the way one
+// every five seconds can.
+constexpr uint32_t kProvenRetryMs = 15 * 60 * 1000;
+
 constexpr uint32_t kApGraceMs = 10 * 60 * 1000;
 constexpr uint32_t kDnsRetryMs = 5000;
 constexpr uint32_t kStaRetryMs = 5000;
@@ -206,8 +237,42 @@ void stopAp() {
         WiFi.mode(WIFI_STA);
 }
 
+// Which of these a router sends varies; all of them mean the credentials did
+// not satisfy it.
+bool credentialRejection(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_AUTH_EXPIRE:
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_ASSOC_FAIL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool credentialsLatched() {
+    return credentialFailures >= kCredentialFailureLimit;
+}
+
+StationState stationState() {
+    if (!stationIsConfigured) return StationState::Unconfigured;
+    if (WiFi.status() == WL_CONNECTED) return StationState::Connected;
+    if (credentialsLatched()) return StationState::BadPassword;
+    if (!sawDisconnect) return StationState::Connecting;
+    if (lastDisconnectReason == WIFI_REASON_NO_AP_FOUND) return StationState::NotFound;
+    // Still inside the tolerance for a rejection that may yet be a fluke.
+    return credentialRejection(lastDisconnectReason)
+        ? StationState::Connecting
+        : StationState::Failed;
+}
+
 void beginStation(const configuration::DeviceConfig &config) {
     stationIsConfigured = configuredWifi(config);
+    // A fresh attempt has no verdict yet; keep the previous one from being
+    // reported against it.
+    sawDisconnect = false;
     strncpy(stationSsid, config.ssid, sizeof(stationSsid) - 1);
     stationSsid[sizeof(stationSsid) - 1] = '\0';
     if (!stationIsConfigured)
@@ -226,6 +291,18 @@ void beginStation(const configuration::DeviceConfig &config) {
 void begin() {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
+    WiFi.onEvent(
+        [](arduino_event_id_t, arduino_event_info_t info) {
+            const uint8_t reason = info.wifi_sta_disconnected.reason;
+            lastDisconnectReason = reason;
+            sawDisconnect = true;
+            // Consecutive, so one rejection among successful associations
+            // never accumulates toward the latch.
+            credentialFailures = credentialRejection(reason)
+                ? static_cast<uint8_t>(credentialFailures + 1)
+                : 0;
+        },
+        ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     loadIdentity();
 
     const configuration::DeviceConfig config = configuration::snapshot();
@@ -263,6 +340,7 @@ void service() {
     }
 
     if (connected) {
+        credentialsProven = true;
         if (!wasStationConnected) {
             if (MDNS.begin(mdnsName))
                 MDNS.addService("http", "tcp", 80);
@@ -287,6 +365,26 @@ void service() {
     }
     if (stationUnavailableAt == 0)
         stationUnavailableAt = now;
+    if (credentialsLatched()) {
+        if (provisioningFailure == StationState::Unconfigured) {
+            provisioningFailure = StationState::BadPassword;
+            credentialsLatchedAt = now;
+            // Only credentials that never associated are withdrawn. A network
+            // that worked before is kept, so the user updates a password
+            // instead of picking the network again.
+            credentialRejectionPending = !credentialsProven;
+        }
+        // The way out is new credentials, so offer the means to enter them now
+        // rather than after the unavailability delay.
+        startAp();
+        if (credentialsProven &&
+            static_cast<int32_t>(now - credentialsLatchedAt) >= kProvenRetryMs) {
+            credentialFailures = 0;
+            provisioningFailure = StationState::Unconfigured;
+            beginStation(configuration::snapshot());
+        }
+        return;
+    }
     if (static_cast<int32_t>(now - stationUnavailableAt) >= kStaUnavailableMs) {
         startAp();
     }
@@ -305,6 +403,8 @@ bool clearIdentity() {
 
 void configurationChanged(const configuration::DeviceConfig &next) {
     stationIsConfigured = configuredWifi(next);
+    credentialFailures = 0;
+    credentialsProven = false;
     if (wasStationConnected)
         MDNS.end();
     wasStationConnected = false;
@@ -320,6 +420,17 @@ void configurationChanged(const configuration::DeviceConfig &next) {
     beginStation(next);
 }
 
+bool takeCredentialRejection() {
+    const bool pending = credentialRejectionPending;
+    credentialRejectionPending = false;
+    return pending;
+}
+
+void clearProvisioningFailure() {
+    provisioningFailure = StationState::Unconfigured;
+    credentialFailures = 0;
+}
+
 bool stationConnected() {
     return stationIsConfigured && WiFi.status() == WL_CONNECTED;
 }
@@ -331,6 +442,8 @@ Snapshot snapshot() {
     result.setupApActive = WiFi.AP.started();
     result.stationConfigured = stationIsConfigured;
     result.stationConnected = stationConnected();
+    result.stationState = stationState();
+    result.provisioningFailure = provisioningFailure;
     result.stationRssi = result.stationConnected ? WiFi.RSSI() : 0;
     strncpy(result.stationSsid, stationSsid, sizeof(result.stationSsid) - 1);
     strncpy(result.setupSsid, deviceName, sizeof(result.setupSsid) - 1);

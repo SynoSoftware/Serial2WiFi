@@ -6,7 +6,14 @@
     const terminalMaxFrameBytes = 1024;
     const terminalEncoder = new TextEncoder();
     const terminalDecoder = new TextDecoder();
+    // Mirrors browser_terminal::Direction; the device prefixes every frame
+    // with it. Entries are {value, direction} so a direction can be filtered
+    // out of the view without being lost from history.
+    const fromSerial = 0;
+    const toSerial = 1;
     const terminalHistory = [];
+    // The same tags the OLED prints, so both surfaces read alike.
+    const terminalTag = (direction) => direction === toSerial ? '<S' : 'S>';
 
     let auth = {
         passwordSet: false,
@@ -1567,6 +1574,51 @@
         $('tcpRuntime').dataset.state = runtime.state;
     }
 
+    // The radio reports why it is not on the network. Saying "not connected"
+    // for all of it leaves the user guessing whether they mistyped a password.
+    function wifiFailure(status) {
+        // The live state returns to unconfigured once rejected credentials are
+        // withdrawn, so the sticky verdict speaks first.
+        switch (status.wifiProvisionFailure === 'bad_password'
+            ? 'bad_password'
+            : status.wifiState) {
+            case 'connecting':
+                return {
+                    title: 'Connecting',
+                    state: 'warning',
+                    detail: 'Trying to join the Wi-Fi network.'
+                };
+            case 'bad_password':
+                // Two different situations reach this point and the way out
+                // differs: credentials that never worked have been withdrawn,
+                // while a network that used to work is kept so that only the
+                // password has to be corrected.
+                return status.wifiConfigured
+                    ? {
+                        title: 'Wi-Fi password no longer accepted',
+                        state: 'danger',
+                        detail: 'The network stopped accepting the saved password, so the device has stopped retrying. Enter the current password and save.'
+                    }
+                    : {
+                        title: 'Wi-Fi password rejected',
+                        state: 'danger',
+                        detail: `The network refused the password, so it was not kept. Stay on the setup network ${status.setupSsid || 'shown on the display'} and choose the network again.`
+                    };
+            case 'not_found':
+                return {
+                    title: 'Wi-Fi network not found',
+                    state: 'danger',
+                    detail: 'The network is out of range or not broadcasting.'
+                };
+            default:
+                return {
+                    title: 'Offline',
+                    state: 'warning',
+                    detail: 'Wi-Fi is not connected.'
+                };
+        }
+    }
+
     function renderBridgeState(status) {
         const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
         const remote = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
@@ -1578,7 +1630,15 @@
         let title = 'Not configured';
         let detail = '';
 
-        if (!status.wifiConfigured || !tcpConfigured) {
+        // A verdict on the saved credentials outranks everything below it.
+        // Withdrawing rejected credentials leaves the device unconfigured, and
+        // that branch would otherwise replace the reason with generic advice.
+        if (status.wifiProvisionFailure === 'bad_password') {
+            const wifi = wifiFailure(status);
+            title = wifi.title;
+            state = wifi.state;
+            detail = wifi.detail;
+        } else if (!status.wifiConfigured || !tcpConfigured) {
             title = 'Not configured';
             if (!status.wifiConfigured && !tcpConfigured) {
                 detail = 'Configure Wi-Fi and TCP before using the serial bridge.';
@@ -1589,10 +1649,15 @@
                     ? 'Set a listening port before using the serial bridge.'
                     : 'Set a server and port before using the serial bridge.';
             }
-        } else if (!status.wifiConnected) {
-            title = 'Offline';
-            state = 'warning';
-            detail = 'Wi-Fi is not connected. TCP is waiting for Wi-Fi.';
+        } else if (!status.wifiConnected || status.wifiProvisionFailure === 'bad_password') {
+            const wifi = wifiFailure(status);
+            title = wifi.title;
+            state = wifi.state;
+            // When there is something to correct, the instruction is the point;
+            // the TCP note only competes with it.
+            detail = wifi.state === 'danger'
+                ? wifi.detail
+                : `${wifi.detail} TCP is waiting for Wi-Fi.`;
         } else {
             switch (status.tcpState) {
                 case 'disabled':
@@ -1674,7 +1739,7 @@
         $('statusWifi').textContent = status.wifiConnected
             ? 'Connected'
             : status.wifiConfigured
-              ? 'Not connected'
+              ? wifiFailure(status).title
               : 'Not configured';
         $('stationIp').textContent = status.stationIp && status.stationIp !== '0.0.0.0' ? status.stationIp : '—';
         $('configurationApState').textContent = status.wifiApActive ? 'On' : 'Off';
@@ -1814,65 +1879,115 @@
         $('terminalCounters').textContent = `RX ${formatBytes(terminalRxBytes)} · TX ${formatBytes(terminalTxBytes)}`;
     }
 
-    function rememberTerminalBytes(bytes) {
-        for (const byte of bytes) terminalHistory.push(byte);
+    function rememberTerminalBytes(bytes, direction) {
+        for (const value of bytes) terminalHistory.push({ value, direction });
         const excess = terminalHistory.length - terminalHistoryLimit;
         if (excess > 0) terminalHistory.splice(0, excess);
     }
 
-    function terminalHistoryBytes() {
-        return Uint8Array.from(terminalHistory);
+    function terminalEntries() {
+        return $('terminalShowSent').checked ?
+            terminalHistory : terminalHistory.filter((entry) => entry.direction === fromSerial);
     }
 
-    function terminalText(bytes) {
-        const text = terminalDecoder.decode(bytes);
-        let rendered = '';
+    // Bytes are shown in the order they happened, so a direction change starts
+    // a new run. Runs, not frames, decide the marking: typing arrives one frame
+    // per keystroke and must still read as one word.
+    function terminalRuns(entries) {
+        const runs = [];
+        for (const entry of entries) {
+            const last = runs[runs.length - 1];
+            if (last && last.direction === entry.direction) last.bytes.push(entry.value);
+            else runs.push({ direction: entry.direction, bytes: [entry.value] });
+        }
+        return runs;
+    }
+
+    // Backspace and CR act on whatever was printed last, whichever side sent
+    // it, so the control-character rules run once over the whole stream and
+    // each emitted character keeps the direction of the byte behind it.
+    function terminalText(entries) {
+        const pieces = [];
         let carriageReturn = false;
-        for (const character of text) {
-            if (carriageReturn) {
-                rendered += '\n';
-                carriageReturn = false;
-                if (character === '\n') continue;
-            }
-            if (character === '\r') {
-                carriageReturn = true;
-                continue;
-            }
-            if (character === '\b') {
-                if (rendered && !rendered.endsWith('\n')) rendered = rendered.slice(0, -1);
-                continue;
-            }
-            if (character === '\n' || character === '\t') {
-                rendered += character;
-                continue;
-            }
-            if (character.codePointAt(0) >= 0x20 && character !== '\u007f') {
-                rendered += character;
+        let direction = fromSerial;
+        for (const run of terminalRuns(entries)) {
+            direction = run.direction;
+            for (const character of terminalDecoder.decode(Uint8Array.from(run.bytes))) {
+                if (carriageReturn) {
+                    pieces.push({ text: '\n', direction });
+                    carriageReturn = false;
+                    if (character === '\n') continue;
+                }
+                if (character === '\r') {
+                    carriageReturn = true;
+                    continue;
+                }
+                if (character === '\b') {
+                    const last = pieces[pieces.length - 1];
+                    if (last && last.text !== '\n') pieces.pop();
+                    continue;
+                }
+                if (character === '\n' || character === '\t') {
+                    pieces.push({ text: character, direction });
+                    continue;
+                }
+                if (character.codePointAt(0) >= 0x20 && character !== '\u007f') {
+                    pieces.push({ text: character, direction });
+                }
             }
         }
-        if (carriageReturn) rendered += '\n';
-        return rendered;
+        if (carriageReturn) pieces.push({ text: '\n', direction });
+        return pieces;
     }
 
-    function terminalHex(bytes) {
-        const lines = [];
-        for (let offset = 0; offset < bytes.length; offset += 16) {
-            const line = bytes.subarray(offset, offset + 16);
-            const hex = Array.from(line, (byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ');
-            const ascii = Array.from(line, (byte) => byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.').join('');
-            lines.push(`${hex.padEnd(47, ' ')}  ${ascii}`);
+    // Hex rows are already row-structured, so they carry the tag itself. A row
+    // never mixes directions: the run ends the row even when it is short.
+    function terminalHex(entries) {
+        const rows = [];
+        for (const run of terminalRuns(entries)) {
+            const bytes = Uint8Array.from(run.bytes);
+            for (let offset = 0; offset < bytes.length; offset += 16) {
+                const line = bytes.subarray(offset, offset + 16);
+                const hex = Array.from(line, (byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+                const ascii = Array.from(line, (byte) => byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.').join('');
+                const row = `${terminalTag(run.direction)} ${hex.padEnd(47, ' ')}  ${ascii}`;
+                rows.push({
+                    text: rows.length === 0 ? row : `\n${row}`,
+                    direction: run.direction
+                });
+            }
         }
-        return lines.join('\n');
+        return rows;
+    }
+
+    // Adjacent pieces of one direction become a single span, so the markup
+    // holds one node per run rather than one per byte.
+    function terminalSpans(pieces) {
+        const spans = [];
+        for (const piece of pieces) {
+            const last = spans[spans.length - 1];
+            if (last && last.dataset.direction === String(piece.direction)) {
+                last.textContent += piece.text;
+                continue;
+            }
+            const span = document.createElement('span');
+            span.dataset.direction = String(piece.direction);
+            if (piece.direction === toSerial) span.className = 'terminal-sent';
+            span.textContent = piece.text;
+            spans.push(span);
+        }
+        return spans;
     }
 
     function renderTerminal() {
         if (terminalPaused) return;
         const output = $('terminalOutput');
         const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 32;
-        const bytes = terminalHistoryBytes();
+        const entries = terminalEntries();
         const hex = $('terminalMode').value === 'hex';
         output.classList.toggle('terminal-hex', hex);
-        output.textContent = hex ? terminalHex(bytes) : terminalText(bytes);
+        output.replaceChildren(
+            ...terminalSpans(hex ? terminalHex(entries) : terminalText(entries)));
         if (follow) output.scrollTop = output.scrollHeight;
     }
 
@@ -1885,9 +2000,14 @@
         });
     }
 
-    function receiveTerminalBytes(bytes) {
-        terminalRxBytes += bytes.length;
-        rememberTerminalBytes(bytes);
+    function receiveTerminalFrame(frame) {
+        // A frame is the direction byte plus at least one payload byte.
+        if (frame.length < 2) return;
+        const direction = frame[0] === toSerial ? toSerial : fromSerial;
+        const bytes = frame.subarray(1);
+        if (direction === toSerial) terminalTxBytes += bytes.length;
+        else terminalRxBytes += bytes.length;
+        rememberTerminalBytes(bytes, direction);
         updateTerminalCounters();
         scheduleTerminalRender();
     }
@@ -1907,7 +2027,7 @@
         return bytes;
     }
 
-    function sendTerminalBytes(bytes, localEcho = true) {
+    function sendTerminalBytes(bytes) {
         if (!canSendTerminalBytes() || bytes.length === 0) return false;
         if (bytes.length > terminalMaxFrameBytes) {
             announce(`Send is limited to ${terminalMaxFrameBytes.toLocaleString()} bytes per message.`);
@@ -1918,12 +2038,6 @@
         } catch {
             return false;
         }
-        terminalTxBytes += bytes.length;
-        if (localEcho && $('terminalLocalEcho').checked) {
-            rememberTerminalBytes(bytes);
-            scheduleTerminalRender();
-        }
-        updateTerminalCounters();
         return true;
     }
 
@@ -1950,24 +2064,24 @@
             const byte = terminalControlByte(event.key);
             if (byte !== null) {
                 event.preventDefault();
-                sendTerminalBytes(new Uint8Array([byte]), false);
+                sendTerminalBytes(new Uint8Array([byte]));
             }
             return;
         }
 
         const special = {
-            Enter: { bytes: terminalLineEnding(), echo: true },
-            Backspace: { bytes: new Uint8Array([0x08]), echo: true },
-            Delete: { bytes: new Uint8Array([0x7f]), echo: false },
-            Escape: { bytes: new Uint8Array([0x1b]), echo: false },
-            ArrowUp: { bytes: new Uint8Array([0x1b, 0x5b, 0x41]), echo: false },
-            ArrowDown: { bytes: new Uint8Array([0x1b, 0x5b, 0x42]), echo: false },
-            ArrowRight: { bytes: new Uint8Array([0x1b, 0x5b, 0x43]), echo: false },
-            ArrowLeft: { bytes: new Uint8Array([0x1b, 0x5b, 0x44]), echo: false }
+            Enter: terminalLineEnding(),
+            Backspace: new Uint8Array([0x08]),
+            Delete: new Uint8Array([0x7f]),
+            Escape: new Uint8Array([0x1b]),
+            ArrowUp: new Uint8Array([0x1b, 0x5b, 0x41]),
+            ArrowDown: new Uint8Array([0x1b, 0x5b, 0x42]),
+            ArrowRight: new Uint8Array([0x1b, 0x5b, 0x43]),
+            ArrowLeft: new Uint8Array([0x1b, 0x5b, 0x44])
         };
         if (special[event.key]) {
             event.preventDefault();
-            sendTerminalBytes(special[event.key].bytes, special[event.key].echo);
+            sendTerminalBytes(special[event.key]);
             return;
         }
         if (event.key.length === 1) {
@@ -2057,9 +2171,9 @@
         socket.addEventListener('message', async (event) => {
             if (terminalSocket !== socket) return;
             if (event.data instanceof ArrayBuffer) {
-                receiveTerminalBytes(new Uint8Array(event.data));
+                receiveTerminalFrame(new Uint8Array(event.data));
             } else if (event.data instanceof Blob) {
-                receiveTerminalBytes(new Uint8Array(await event.data.arrayBuffer()));
+                receiveTerminalFrame(new Uint8Array(await event.data.arrayBuffer()));
             }
         });
         socket.addEventListener('close', () => {
@@ -2211,6 +2325,7 @@
         $('terminalPause').addEventListener('click', toggleTerminalPause);
         $('terminalClear').addEventListener('click', clearTerminal);
         $('terminalMode').addEventListener('change', renderTerminal);
+        $('terminalShowSent').addEventListener('change', renderTerminal);
         updateTerminalCounters();
         updateTerminalWriteAccess();
     }
