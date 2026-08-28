@@ -9,6 +9,14 @@
 // Save-outcome triggers (magic values, mirroring the firmware's responses):
 //   tcpListenPort=65535 -> 400 {"error":"invalid_port","field":"tcpListenPort"}
 //   baud=460800         -> 503 {"error":"serial_error","persisted":true}
+//
+// Trial outcomes are chosen before the attempt and delivered after a few polls,
+// so the connecting panel is actually exercised:
+//   curl -X POST -d "outcome=auth_failed&rssi=-84" http://127.0.0.1:4173/mock/wifi
+//   curl -X POST -d "outcome=connected" http://127.0.0.1:4173/mock/wifi
+//   curl -X POST -d "outcome=connected&polls=30" http://127.0.0.1:4173/mock/wifi
+// Valid outcomes: connected, auth_failed, security_mismatch, not_found,
+// could_not_connect, could_not_save.
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -22,12 +30,16 @@ const state = {
     configDown: false
 };
 // Not a boolean, so /mock/state cannot set it; assign it directly instead:
-//   curl -X POST -d "wifiState=bad_password" http://127.0.0.1:4173/mock/wifi
-state.wifiState = 'connected';
-// 'bad_password' with an ssid still set is a network that used to work;
-// with the ssid cleared it is credentials that never did.
-state.wifiProvisionFailure = 'unconfigured';
+//   curl -X POST -d "wifiOutcome=auth_failed" http://127.0.0.1:4173/mock/wifi
+state.wifiOutcome = 'connected';
+// What the next trial will decide, and how many polls it takes to get there.
+state.nextOutcome = 'connected';
+state.nextRssi = 0;
+state.nextPolls = 3;
 let scanPolls = null;
+// Mirrors wifi_access's trial state: the verdict is published only once the
+// attempt is no longer running, and it outlives the page that started it.
+let trial = { outcome: 'none', running: false, ssid: '', rssi: 0, polls: 0 };
 let config = {
     ssid: 'Workshop',
     wifiSecurity: 'secured',
@@ -98,12 +110,11 @@ function status() {
         firmwareBuild,
         frontendBuild: frontendBuild(),
         wifiConfigured: Boolean(config.ssid),
-        wifiConnected: state.wifiState === 'connected' && Boolean(config.ssid),
-        wifiState: config.ssid ? state.wifiState : 'unconfigured',
-        wifiProvisionFailure: state.wifiProvisionFailure,
+        wifiConnected: state.wifiOutcome === 'connected' && Boolean(config.ssid),
+        wifiOutcome: config.ssid ? state.wifiOutcome : 'none',
         wifiApActive: true,
         setupSsid: 'S2W-B9',
-        stationIp: state.wifiState === 'connected' && config.ssid ? '10.0.88.184' : '',
+        stationIp: state.wifiOutcome === 'connected' && config.ssid ? '10.0.88.184' : '',
         // Derived from the saved record, like the firmware. Hardcoding these
         // made the runtime labels report a state no save could ever change.
         tcpMode: config.tcpMode,
@@ -124,10 +135,17 @@ http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1:4173');
     if (request.method === 'POST' && url.pathname === '/mock/wifi') {
         const form = await readForm(request);
-        if (form.has('wifiState')) state.wifiState = form.get('wifiState');
-        if (form.has('wifiProvisionFailure')) state.wifiProvisionFailure = form.get('wifiProvisionFailure');
+        if (form.has('wifiOutcome')) state.wifiOutcome = form.get('wifiOutcome');
+        if (form.has('outcome')) state.nextOutcome = form.get('outcome');
+        if (form.has('rssi')) state.nextRssi = Number(form.get('rssi'));
+        if (form.has('polls')) state.nextPolls = Number(form.get('polls'));
         if (form.has('ssid')) config.ssid = form.get('ssid');
-        return json(response, 200, { wifiState: state.wifiState });
+        return json(response, 200, {
+            wifiOutcome: state.wifiOutcome,
+            nextOutcome: state.nextOutcome,
+            nextRssi: state.nextRssi,
+            nextPolls: state.nextPolls
+        });
     }
     if (request.method === 'POST' && url.pathname === '/mock/state') {
         const form = await readForm(request);
@@ -181,19 +199,104 @@ http.createServer(async (request, response) => {
         if (request.method === 'GET') return json(response, 200, config);
         if (request.method === 'POST') {
             const form = await readForm(request);
+            // The firmware's Part 3 rule: only the stored network unchanged, or
+            // the forget shape. Anything else is a credential write and belongs
+            // to /api/wifi/trial.
+            const ssid = form.get('ssid') || '';
+            const security = form.get('wifiSecurity') || '';
+            const password = form.get('wifiPassword') || '';
+            const forget = ssid === '' && password === '' && security === 'unset';
+            if (!forget) {
+                const changed = password !== '' ? 'wifiPassword'
+                    : ssid !== config.ssid ? 'ssid'
+                    : security !== config.wifiSecurity ? 'wifiSecurity' : null;
+                if (changed) {
+                    return json(response, 400, {
+                        error: 'credential_change_not_allowed', field: changed
+                    });
+                }
+            }
             if (form.get('tcpListenPort') === '65535') {
                 return json(response, 400, { error: 'invalid_port', field: 'tcpListenPort' });
             }
             if (form.get('baud') === '460800') {
                 return json(response, 503, { error: 'serial_error', persisted: true });
             }
-            config = { ...config, ...Object.fromEntries(form), wifiPasswordSaved: true };
+            config = { ...config, ...Object.fromEntries(form) };
+            if (forget) {
+                config.wifiPasswordSaved = false;
+                state.wifiOutcome = 'none';
+            }
             return json(response, 200, { ok: true });
         }
+    }
+    if (url.pathname === '/api/wifi/trial') {
+        if (state.passwordSet && !state.authenticated) {
+            return json(response, 401, { error: 'authentication_required' });
+        }
+        if (request.method === 'POST') {
+            if (trial.running) return json(response, 409, { error: 'trial_running' });
+            const form = await readForm(request);
+            const ssid = form.get('ssid') || '';
+            const password = form.get('wifiPassword') || '';
+            if (!ssid) return json(response, 400, { error: 'network_required', field: 'ssid' });
+            if (form.get('wifiSecurity') === 'secured') {
+                if (password.length < 8 || password.length > 63) {
+                    return json(response, 400, { error: 'invalid_length', field: 'wifiPassword' });
+                }
+                if (!/^[\x20-\x7e]+$/.test(password)) {
+                    return json(response, 400, { error: 'invalid_characters', field: 'wifiPassword' });
+                }
+            } else if (password !== '') {
+                return json(response, 400, { error: 'unexpected_password', field: 'wifiPassword' });
+            }
+            trial = {
+                outcome: 'none',
+                running: true,
+                ssid,
+                rssi: 0,
+                polls: state.nextPolls,
+                security: form.get('wifiSecurity'),
+                password
+            };
+            return json(response, 202, { ok: true });
+        }
+        if (request.method === 'DELETE') {
+            trial = { outcome: 'none', running: false, ssid: trial.ssid, rssi: 0, polls: 0 };
+            return json(response, 200, { ok: true });
+        }
+        if (trial.running) {
+            trial.polls -= 1;
+            if (trial.polls <= 0) {
+                trial.running = false;
+                trial.outcome = state.nextOutcome;
+                trial.rssi = state.nextRssi;
+                if (trial.outcome === 'connected') {
+                    // Like the firmware: the commit happens before Connected is
+                    // published, so the saved record already names the network.
+                    config.ssid = trial.ssid;
+                    config.wifiSecurity = trial.security;
+                    config.wifiPasswordSaved = trial.security === 'secured';
+                    state.wifiOutcome = 'connected';
+                }
+            }
+        }
+        return json(response, 200, {
+            outcome: trial.outcome,
+            running: trial.running,
+            ssid: trial.ssid,
+            rssi: trial.rssi,
+            ip: trial.outcome === 'connected' ? '10.0.88.184' : '',
+            mdnsHost: 'serial2wifi-a1b4.local',
+            apActive: state.terminalAvailable
+        });
     }
     if (url.pathname === '/api/wifi/scan') {
         if (state.passwordSet && !state.authenticated) return json(response, 401, { error: 'authentication_required' });
         if (request.method === 'POST') {
+            // Like the firmware: a scan would abort the attempt in flight and
+            // produce a failure verdict for a password that was fine.
+            if (trial.running) return json(response, 409, { error: 'trial_running' });
             scanPolls = 2;
             return json(response, 202, { ok: true });
         }

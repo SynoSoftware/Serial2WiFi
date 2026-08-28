@@ -116,16 +116,17 @@ void loadFrontendBuildNumber() {
     }
 }
 
-const char *stationStateName(wifi_access::StationState state) {
-    switch (state) {
-        case wifi_access::StationState::Connecting: return "connecting";
-        case wifi_access::StationState::Connected: return "connected";
-        case wifi_access::StationState::BadPassword: return "bad_password";
-        case wifi_access::StationState::NotFound: return "not_found";
-        case wifi_access::StationState::Failed: return "failed";
-        case wifi_access::StationState::Unconfigured: break;
+const char *outcomeName(wifi_access::ConnectionOutcome outcome) {
+    switch (outcome) {
+        case wifi_access::ConnectionOutcome::Connected: return "connected";
+        case wifi_access::ConnectionOutcome::SecurityMismatch: return "security_mismatch";
+        case wifi_access::ConnectionOutcome::NotFound: return "not_found";
+        case wifi_access::ConnectionOutcome::AuthFailed: return "auth_failed";
+        case wifi_access::ConnectionOutcome::CouldNotConnect: return "could_not_connect";
+        case wifi_access::ConnectionOutcome::CouldNotSave: return "could_not_save";
+        case wifi_access::ConnectionOutcome::None: break;
     }
-    return "unconfigured";
+    return "none";
 }
 
 bool fromSetupAp() {
@@ -321,9 +322,7 @@ void handleStatus() {
     body += ",\"frontendBuild\":\"" + escaped(frontendBuildNumber) + "\"";
     body += ",\"wifiConfigured\":" + String(wifi.stationConfigured ? "true" : "false");
     body += ",\"wifiConnected\":" + String(wifi.stationConnected ? "true" : "false");
-    body += ",\"wifiState\":\"" + String(stationStateName(wifi.stationState)) + "\"";
-    body += ",\"wifiProvisionFailure\":\"" +
-        String(stationStateName(wifi.provisioningFailure)) + "\"";
+    body += ",\"wifiOutcome\":\"" + String(outcomeName(wifi.stationOutcome)) + "\"";
     body += ",\"wifiApActive\":" + String(wifi.setupApActive ? "true" : "false");
     body += ",\"setupSsid\":\"" + escaped(wifi.setupSsid) + "\"";
     body += ",\"stationIp\":\"" + escaped(ipString(wifi.stationIp)) + "\"";
@@ -546,6 +545,32 @@ void handleConfigPost() {
     }
     candidate.wifiSecurity = static_cast<uint8_t>(security);
 
+    // Credentials are never stored here, because nothing stored here has been
+    // tried; new ones arrive through /api/wifi/trial, which proves them first.
+    // What is refused is a credential *change*, not the presence of the fields:
+    // every save carries all twelve of them, so a baud-rate save still sends
+    // the stored SSID and an empty password, and a rule against the fields
+    // themselves would make the settings form unsavable. Refusing rather than
+    // ignoring matters too — a stale page whose credentials were quietly
+    // dropped would report a save that never happened, which is the invisible
+    // failure this whole path exists to remove.
+    //
+    // Forgetting is not a credential write. It must always be possible and it
+    // cannot fail, so it is accepted whatever is stored.
+    const bool forget = candidate.ssid[0] == '\0' && password.length() == 0 &&
+        security == configuration::WifiSecurity::Unset;
+    if (!forget) {
+        if (password.length() != 0) {
+            return configError("wifiPassword", "credential_change_not_allowed");
+        }
+        if (strcmp(current.ssid, candidate.ssid) != 0) {
+            return configError("ssid", "credential_change_not_allowed");
+        }
+        if (current.wifiSecurity != candidate.wifiSecurity) {
+            return configError("wifiSecurity", "credential_change_not_allowed");
+        }
+    }
+
     if (candidate.ssid[0] == '\0') {
         candidate.wifiSecurity = static_cast<uint8_t>(configuration::WifiSecurity::Unset);
         candidate.wifiPassword[0] = '\0';
@@ -629,9 +654,106 @@ void handleConfigPost() {
     sendJson("{\"ok\":true}");
 }
 
+// 8 to 63 printable ASCII is the WPA2 passphrase definition. A 64-character
+// value is not a longer passphrase but a raw hex PSK, a different input this
+// product does not offer. This lives here and not in validationError(): that
+// runs at boot over the stored record, so a device already holding a shorter
+// password would lose its whole configuration on the next boot.
+constexpr size_t kMinimumWifiPassword = 8;
+constexpr size_t kMaximumWifiPassword = 63;
+
+// Never modify what the user typed. Spaces are legal anywhere in a passphrase,
+// including at the ends, so trimming can turn a correct password into a wrong
+// one; CR, LF and tab are outside the legal set, so they are refused with a
+// message rather than silently stripped.
+bool printableAscii(const String &value) {
+    for (size_t index = 0; index < value.length(); ++index) {
+        const char character = value[index];
+        if (character < 32 || character > 126) return false;
+    }
+    return true;
+}
+
+void handleTrialPost() {
+    if (!requireConfigurationAccess()) return;
+    if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    // One trial at a time. Two overlapping attempts on the same SSID cannot be
+    // told apart by their events, so the verdict of one Connect press could
+    // describe the other. The UI cannot produce this; the API refuses it.
+    if (wifi_access::trialRunning()) {
+        return sendJson("{\"error\":\"trial_running\"}", 409);
+    }
+    if (!server.hasArg("ssid") || !server.hasArg("wifiSecurity") ||
+            !server.hasArg("wifiPassword")) {
+        return configError("configuration", "incomplete_request");
+    }
+
+    const String ssid = server.arg("ssid");
+    const String password = server.arg("wifiPassword");
+    configuration::WifiSecurity security;
+    if (!parseSecurity(server.arg("wifiSecurity"), security) ||
+            security == configuration::WifiSecurity::Unset) {
+        return configError("wifiSecurity", "invalid_security");
+    }
+    if (ssid.length() == 0) return configError("ssid", "network_required");
+    if (ssid.length() > 32) return configError("ssid", "too_long");
+    if (security == configuration::WifiSecurity::Open) {
+        if (password.length() != 0) {
+            return configError("wifiPassword", "unexpected_password");
+        }
+    } else if (password.length() < kMinimumWifiPassword ||
+            password.length() > kMaximumWifiPassword) {
+        return configError("wifiPassword", "invalid_length");
+    } else if (!printableAscii(password)) {
+        return configError("wifiPassword", "invalid_characters");
+    }
+
+    wifi_access::WifiCredentials candidate{};
+    ssid.toCharArray(candidate.ssid, sizeof(candidate.ssid));
+    password.toCharArray(candidate.password, sizeof(candidate.password));
+    candidate.security = static_cast<uint8_t>(security);
+    wifi_access::beginTrial(candidate);
+    // Accepted, not done: the radio starts on a later service() pass, once
+    // this response has left the interface the attempt may take down.
+    sendJson("{\"ok\":true}", 202);
+}
+
+void handleTrialGet() {
+    if (!requireConfigurationAccess()) return;
+    const wifi_access::TrialStatus trial = wifi_access::trialStatus();
+    const wifi_access::Snapshot wifi = wifi_access::snapshot();
+    String body;
+    body.reserve(256);
+    body += "{\"outcome\":\"" + String(outcomeName(trial.outcome)) + "\"";
+    body += ",\"running\":" + String(trial.running ? "true" : "false");
+    body += ",\"ssid\":\"" + escaped(trial.ssid) + "\"";
+    body += ",\"rssi\":" + String(trial.rssi);
+    // The station's live address, empty once it is off the network. Together
+    // with apActive it gates the handoff card: either on its own can replay a
+    // stale "connected" long after the window that card describes has closed.
+    body += ",\"ip\":\"" +
+        (wifi.stationConnected ? escaped(ipString(wifi.stationIp)) : String()) + "\"";
+    body += ",\"mdnsHost\":\"" + escaped(wifi_access::mdnsHost()) + "\"";
+    body += ",\"apActive\":" + String(wifi.setupApActive ? "true" : "false");
+    body += "}";
+    sendJson(body);
+}
+
+void handleTrialDelete() {
+    if (!requireConfigurationAccess()) return;
+    if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    wifi_access::cancelTrial();
+    sendJson("{\"ok\":true}");
+}
+
 void handleScanPost() {
     if (!requireSetupAccess()) return;
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
+    // A scan mid-trial would abort the attempt and produce a failure verdict
+    // for a password that was fine.
+    if (wifi_access::trialRunning()) {
+        return sendJson("{\"error\":\"trial_running\"}", 409);
+    }
     wifi_access::startScan();
     sendJson("{\"ok\":true}", 202);
 }
@@ -784,6 +906,9 @@ void begin(configuration::ApplyCallback callback) {
     server.on("/app.js", HTTP_GET, []() {
         serveFile("/app.js", "application/javascript; charset=utf-8");
     });
+    server.on("/strings.js", HTTP_GET, []() {
+        serveFile("/strings.js", "application/javascript; charset=utf-8");
+    });
     server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/auth", HTTP_GET, handleAuthGet);
     server.on("/api/auth/login", HTTP_POST, handleAuthLogin);
@@ -793,6 +918,9 @@ void begin(configuration::ApplyCallback callback) {
     server.on("/api/config", HTTP_POST, handleConfigPost);
     server.on("/api/wifi/scan", HTTP_POST, handleScanPost);
     server.on("/api/wifi/scan", HTTP_GET, handleScanGet);
+    server.on("/api/wifi/trial", HTTP_POST, handleTrialPost);
+    server.on("/api/wifi/trial", HTTP_GET, handleTrialGet);
+    server.on("/api/wifi/trial", HTTP_DELETE, handleTrialDelete);
     server.on("/generate_204", HTTP_ANY, handleCaptiveProbe);
     server.on("/gen_204", HTTP_ANY, handleCaptiveProbe);
     server.on("/hotspot-detect.html", HTTP_ANY, handleCaptiveProbe);

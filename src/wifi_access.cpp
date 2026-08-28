@@ -14,37 +14,30 @@ namespace {
 // every failure looked the same from the outside. Written from the Wi-Fi event
 // task and read from the main loop, hence volatile.
 volatile uint8_t lastDisconnectReason = 0;
+volatile int8_t lastDisconnectRssi = 0;
 volatile bool sawDisconnect = false;
-volatile uint8_t credentialFailures = 0;
-bool credentialRejectionPending = false;
-StationState provisioningFailure = StationState::Unconfigured;
-// Whether the credentials now stored have ever associated. It decides what a
-// rejection means: credentials that never worked were mistyped and are
-// withdrawn, while credentials that did work say the network changed its
-// password, so the network is kept and the user is asked to update it.
-bool credentialsProven = false;
-uint32_t credentialsLatchedAt = 0;
-
-// A rejected password is a configuration error, not a transient one: retrying
-// it cannot succeed until someone edits the credentials. Retrying anyway costs
-// a failed authentication against the router every few seconds, which some
-// routers answer by blocking the client, and every attempt shares the radio
-// with the setup AP the user needs in order to fix it. So the station latches
-// after a few consecutive rejections and waits for new credentials.
-//
-// A few, not one: a correct password can still lose a handshake on a congested
-// channel, and latching on a single timeout would accuse the user wrongly.
-constexpr uint8_t kCredentialFailureLimit = 3;
-// A network that used to work may be given its old password back, and this
-// device can be somewhere awkward to reach. So a proven network is retried,
-// but rarely: four attempts an hour cannot trip a router's lockout the way one
-// every five seconds can.
-constexpr uint32_t kProvenRetryMs = 15 * 60 * 1000;
+volatile bool sawGotIp = false;
 
 constexpr uint32_t kApGraceMs = 10 * 60 * 1000;
 constexpr uint32_t kDnsRetryMs = 5000;
-constexpr uint32_t kStaRetryMs = 5000;
 constexpr uint32_t kStaUnavailableMs = 30000;
+// While the station is down the device runs one scan-then-attempt cycle on a
+// single backoff, never both at once: WiFi.begin() aborts a scan in flight, and
+// a blind retry every few seconds clobbered every scan the user asked for, so
+// the network list came back empty with no error and no way out. The scan sets
+// the timing of the attempt, so the two can never compete. The interval doubles
+// while nothing works, up to a cap that still heals a router outage unattended.
+constexpr uint32_t kReconnectStartMs = 10000;
+constexpr uint32_t kReconnectMaxMs = 15 * 60 * 1000;
+// An access point that neither accepts nor rejects produces no disconnect
+// event at all. Without a cap the trial would hold the radio for ever, leaving
+// the device outside its own reconnect logic and still refusing scans.
+constexpr uint32_t kTrialTimeoutMs = 60000;
+// A trial ends when we end it, not when the driver stops talking: the core
+// retries once per boot on its own, whatever the failure reason, so one begin
+// is not one disconnect. Teardown swallows whatever that produces, ending on
+// its own disconnect or here, so one attempt can only ever give one verdict.
+constexpr uint32_t kTrialTeardownMs = 1000;
 constexpr uint8_t kSetupApChannel = 1;
 // Keep these credentials compact. The OLED uses a fixed Version 2-L QR at
 // 2x scale; do not lengthen the SSID, password, or alphabet without first
@@ -60,8 +53,19 @@ static_assert(
         kQrVersion2LowEccByteCapacity,
     "Setup Wi-Fi credentials exceed the fixed Version 2-L QR capacity. The QR version and dimensions are immutable: do not enlarge it and do not switch to Version 3. Shorten the generated setup SSID until the payload fits Version 2-L.");
 
+// One trial is one bounded operation with a fixed lifecycle. Starting is
+// staged work the radio has not begun; TearingDown is the window in which no
+// event may be read as a verdict.
+enum class TrialPhase : uint8_t {
+    Idle = 0,
+    Starting,
+    Attempting,
+    TearingDown,
+};
+
 Preferences identityPreferences;
 DNSServer dnsServer;
+configuration::ApplyCallback applyConfiguration = nullptr;
 char deviceName[33]{};
 char devicePassword[17]{};
 char mdnsName[33]{};
@@ -73,9 +77,21 @@ bool stationIsConfigured = false;
 bool wasStationConnected = false;
 uint32_t apCloseAt = 0;
 uint32_t dnsRetryAt = 0;
-uint32_t stationRetryAt = 0;
 uint32_t stationUnavailableAt = 0;
+uint32_t reconnectAt = 0;
+uint32_t reconnectBackoffMs = kReconnectStartMs;
+bool attemptAfterScan = false;
 ScanState currentScanState = ScanState::Idle;
+ConnectionOutcome stationOutcome = ConnectionOutcome::None;
+
+TrialPhase trialPhase = TrialPhase::Idle;
+WifiCredentials trialCandidate{};
+// Execution and result are separate state. A verdict ends execution but stays
+// readable until another trial replaces it, which is the only thing that lets
+// a phone that lost the page come back to the answer.
+ConnectionOutcome trialOutcome = ConnectionOutcome::None;
+int32_t trialRssi = 0;
+uint32_t trialPhaseDeadline = 0;
 
 bool configuredWifi(const configuration::DeviceConfig &config) {
     return config.ssid[0] != '\0';
@@ -192,8 +208,10 @@ void startAp() {
     apIsActive = false;
     // Before station credentials exist, setup must be a plain AP. Starting an
     // unused STA interface in that recovery state gives it no product value
-    // and makes the setup radio depend on concurrent-mode behavior.
-    WiFi.mode(stationIsConfigured ? WIFI_AP_STA : WIFI_AP);
+    // and makes the setup radio depend on concurrent-mode behavior. A trial is
+    // the exception that proves the rule: a first-time trial has nothing stored
+    // yet — that is the point of it — and still needs the station interface.
+    WiFi.mode(stationIsConfigured || trialRunning() ? WIFI_AP_STA : WIFI_AP);
     // Android abandons captive detection before it sends any HTTP probe when
     // the probe hostname resolves to an RFC1918 or link-local address. See
     // NetworkMonitor.hasPrivateIpAddress: 10/8, 172.16/12, 192.168/16 and
@@ -237,42 +255,83 @@ void stopAp() {
         WiFi.mode(WIFI_STA);
 }
 
-// Which of these a router sends varies; all of them mean the credentials did
-// not satisfy it.
-bool credentialRejection(uint8_t reason) {
+// What the event task copied out, taken once per pass by the loop task. The
+// callbacks copy facts and nothing else; classification, trial transitions,
+// commits and radio changes all belong to service(), which runs on loop().
+struct StationEvents {
+    bool disconnected;
+    bool gotIp;
+    uint8_t reason;
+    int32_t rssi;
+};
+
+StationEvents takeStationEvents() {
+    StationEvents events{};
+    events.disconnected = sawDisconnect;
+    events.gotIp = sawGotIp;
+    events.reason = lastDisconnectReason;
+    events.rssi = lastDisconnectRssi;
+    sawDisconnect = false;
+    sawGotIp = false;
+    return events;
+}
+
+// A voluntary disconnect is never a verdict, because in this design the one
+// who left is always us: a trial tearing itself down, or the driver leaving the
+// old network so a trial can try a new one. The core refuses to reconnect on
+// it for the same reason.
+bool voluntaryDisconnect(uint8_t reason) {
+    return reason == WIFI_REASON_ASSOC_LEAVE;
+}
+
+// Report the phase that failed, which is all the driver knows. None of these
+// codes means "wrong password": a station is never the authenticator, so a
+// wrong key produces silence and then a timeout, never a rejection. Three named
+// sets and a default keep this total over an enum that runs past 200 with codes
+// for TDLS, QoS, block-ack and fast transition.
+ConnectionOutcome classifyDisconnect(uint8_t reason) {
     switch (reason) {
+        // The two sides could not agree on crypto, or the driver's own WPA2
+        // threshold refused the access point before attempting it. Answering
+        // these with "check the password" would blame a step never reached.
+        case WIFI_REASON_GROUP_CIPHER_INVALID:
+        case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+        case WIFI_REASON_AKMP_INVALID:
+        case WIFI_REASON_UNSUPP_RSN_IE_VERSION:
+        case WIFI_REASON_INVALID_RSN_IE_CAP:
+        case WIFI_REASON_CIPHER_SUITE_REJECTED:
+        case WIFI_REASON_BAD_CIPHER_OR_AKM:
+        case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+            return ConnectionOutcome::SecurityMismatch;
+        case WIFI_REASON_NO_AP_FOUND:
+            return ConnectionOutcome::NotFound;
         case WIFI_REASON_AUTH_EXPIRE:
-        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_MIC_FAILURE:
         case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_IE_IN_4WAY_DIFFERS:
+        case WIFI_REASON_802_1X_AUTH_FAILED:
+        case WIFI_REASON_AUTH_FAIL:
         case WIFI_REASON_HANDSHAKE_TIMEOUT:
-        case WIFI_REASON_ASSOC_FAIL:
-            return true;
+            return ConnectionOutcome::AuthFailed;
         default:
-            return false;
+            // Including 203, 205 and 200: we do not know what happened, and
+            // CouldNotConnect says exactly that.
+            return ConnectionOutcome::CouldNotConnect;
     }
 }
 
-bool credentialsLatched() {
-    return credentialFailures >= kCredentialFailureLimit;
-}
-
-StationState stationState() {
-    if (!stationIsConfigured) return StationState::Unconfigured;
-    if (WiFi.status() == WL_CONNECTED) return StationState::Connected;
-    if (credentialsLatched()) return StationState::BadPassword;
-    if (!sawDisconnect) return StationState::Connecting;
-    if (lastDisconnectReason == WIFI_REASON_NO_AP_FOUND) return StationState::NotFound;
-    // Still inside the tolerance for a rejection that may yet be a fluke.
-    return credentialRejection(lastDisconnectReason)
-        ? StationState::Connecting
-        : StationState::Failed;
+// The raw reason decides nothing; the outcome above is what anyone acts on.
+// It is here for support and for confirming the table on real hardware, so it
+// goes to the core log rather than to Serial, which carries the bridge's data.
+// Raise CORE_DEBUG_LEVEL to see it, accepting that the log shares that port.
+void noteDisconnectReason(const StationEvents &events) {
+    log_i("Wi-Fi disconnect reason %u, rssi %d", events.reason,
+          static_cast<int>(events.rssi));
 }
 
 void beginStation(const configuration::DeviceConfig &config) {
     stationIsConfigured = configuredWifi(config);
-    // A fresh attempt has no verdict yet; keep the previous one from being
-    // reported against it.
-    sawDisconnect = false;
     strncpy(stationSsid, config.ssid, sizeof(stationSsid) - 1);
     stationSsid[sizeof(stationSsid) - 1] = '\0';
     if (!stationIsConfigured)
@@ -283,26 +342,143 @@ void beginStation(const configuration::DeviceConfig &config) {
     } else {
         WiFi.begin(config.ssid, config.wifiPassword);
     }
-    stationRetryAt = millis() + kStaRetryMs;
+    // The cycle is scheduled by the attempt it follows, so the scan that opens
+    // the next one can never land on top of this attempt.
+    reconnectAt = millis() + reconnectBackoffMs;
+    reconnectBackoffMs = reconnectBackoffMs > kReconnectMaxMs / 2
+        ? kReconnectMaxMs
+        : reconnectBackoffMs * 2;
+}
+
+// Sequential by construction: a scan in flight defers the attempt, and an
+// attempt is only ever started once a scan has finished.
+void serviceReconnect(uint32_t now) {
+    if (scanState() == ScanState::Scanning) {
+        // A user pressing Scan sets the timing of the attempt too, so the
+        // reconnect comes forward with the scan instead of racing it.
+        attemptAfterScan = true;
+        return;
+    }
+    if (attemptAfterScan) {
+        attemptAfterScan = false;
+        // Never gated on the scan having seen the network: hidden networks join
+        // through this same path, and absence is the driver's answer to report,
+        // not ours to infer.
+        beginStation(configuration::snapshot());
+        return;
+    }
+    if (static_cast<int32_t>(now - reconnectAt) >= 0) {
+        startScan();
+        attemptAfterScan = true;
+    }
+}
+
+void startTrialAttempt(uint32_t now) {
+    // The way back in, before the radio moves: a trial started from the LAN
+    // drops the station, and the setup AP is the interface the user returns to.
+    startAp();
+    strncpy(stationSsid, trialCandidate.ssid, sizeof(stationSsid) - 1);
+    stationSsid[sizeof(stationSsid) - 1] = '\0';
+    WiFi.mode(apIsActive ? WIFI_AP_STA : WIFI_STA);
+    // Connect by name and let the driver pick the access point, exactly as any
+    // phone does. WiFi.begin() leaves a network it is already on; that
+    // departure is a voluntary disconnect, which is never read as a verdict.
+    if (trialCandidate.security == static_cast<uint8_t>(configuration::WifiSecurity::Open)) {
+        WiFi.begin(trialCandidate.ssid);
+    } else {
+        WiFi.begin(trialCandidate.ssid, trialCandidate.password);
+    }
+    trialPhaseDeadline = now + kTrialTimeoutMs;
+    trialPhase = TrialPhase::Attempting;
+}
+
+// Every ending except a proved connection comes through here.
+void finishTrial(ConnectionOutcome outcome, int32_t rssi) {
+    trialOutcome = outcome;
+    trialRssi = rssi;
+    // The verdict and the network name survive for the phone to read; the
+    // password does not outlive the trial that used it.
+    memset(trialCandidate.password, 0, sizeof(trialCandidate.password));
+    // Nothing was committed, so the stored network comes back through the
+    // ordinary scan-then-attempt cycle. Restoring it is not an operation the
+    // trial performs; it is what the absence of a commit already means.
+    reconnectBackoffMs = kReconnectStartMs;
+    reconnectAt = millis();
+    attemptAfterScan = false;
+    WiFi.disconnect(false, false);
+    trialPhaseDeadline = millis() + kTrialTeardownMs;
+    trialPhase = TrialPhase::TearingDown;
+}
+
+void completeTrial() {
+    configuration::DeviceConfig candidate = configuration::snapshot();
+    strncpy(candidate.ssid, trialCandidate.ssid, sizeof(candidate.ssid) - 1);
+    candidate.ssid[sizeof(candidate.ssid) - 1] = '\0';
+    candidate.wifiSecurity = trialCandidate.security;
+    strncpy(candidate.wifiPassword, trialCandidate.password,
+            sizeof(candidate.wifiPassword) - 1);
+    candidate.wifiPassword[sizeof(candidate.wifiPassword) - 1] = '\0';
+    // The snapshot is taken now, not when the trial started, so a setting the
+    // user changed during the attempt is not silently reverted by this commit.
+    if (!configuration::commit(candidate, applyConfiguration)) {
+        // Keeping a connection that was never saved would leave the device
+        // connected but unconfigured, a state service() has no branch for.
+        finishTrial(ConnectionOutcome::CouldNotSave, 0);
+        return;
+    }
+    trialOutcome = ConnectionOutcome::Connected;
+    memset(trialCandidate.password, 0, sizeof(trialCandidate.password));
+    // No teardown: the connection just proved is the product, and dropping it
+    // would be the one unforgivable ending.
+    trialPhase = TrialPhase::Idle;
+}
+
+void serviceTrial(uint32_t now, const StationEvents &events) {
+    switch (trialPhase) {
+        case TrialPhase::Starting:
+            startTrialAttempt(now);
+            return;
+        case TrialPhase::Attempting:
+            if (events.gotIp) {
+                completeTrial();
+            } else if (events.disconnected && !voluntaryDisconnect(events.reason)) {
+                noteDisconnectReason(events);
+                finishTrial(classifyDisconnect(events.reason), events.rssi);
+            } else if (static_cast<int32_t>(now - trialPhaseDeadline) >= 0) {
+                finishTrial(ConnectionOutcome::CouldNotConnect, 0);
+            }
+            return;
+        case TrialPhase::TearingDown:
+            // Nothing arriving now can be a verdict, so nothing here reads one:
+            // taking the events is already swallowing them.
+            if (events.disconnected ||
+                    static_cast<int32_t>(now - trialPhaseDeadline) >= 0) {
+                trialPhase = TrialPhase::Idle;
+            }
+            return;
+        case TrialPhase::Idle:
+            return;
+    }
 }
 
 } // namespace
 
-void begin() {
+void begin(configuration::ApplyCallback apply) {
+    applyConfiguration = apply;
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
+    // Both callbacks run on the Wi-Fi event task, so both only copy facts.
+    // Deciding anything here would race everything the loop task owns.
     WiFi.onEvent(
         [](arduino_event_id_t, arduino_event_info_t info) {
-            const uint8_t reason = info.wifi_sta_disconnected.reason;
-            lastDisconnectReason = reason;
+            lastDisconnectReason = info.wifi_sta_disconnected.reason;
+            lastDisconnectRssi = info.wifi_sta_disconnected.rssi;
             sawDisconnect = true;
-            // Consecutive, so one rejection among successful associations
-            // never accumulates toward the latch.
-            credentialFailures = credentialRejection(reason)
-                ? static_cast<uint8_t>(credentialFailures + 1)
-                : 0;
         },
         ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    WiFi.onEvent(
+        [](arduino_event_id_t, arduino_event_info_t) { sawGotIp = true; },
+        ARDUINO_EVENT_WIFI_STA_GOT_IP);
     loadIdentity();
 
     const configuration::DeviceConfig config = configuration::snapshot();
@@ -315,8 +491,8 @@ void begin() {
 }
 
 void service() {
-    const bool connected = stationConnected();
     const uint32_t now = millis();
+    const StationEvents events = takeStationEvents();
 
     // The AP can disappear independently of this state machine. Clear the
     // cached flag before servicing DNS so the display never advertises a QR
@@ -332,6 +508,14 @@ void service() {
         dnsServer.processNextRequest();
     }
 
+    // One radio, one owner, and while a trial runs the owner is the trial. The
+    // phone is sitting on the setup AP, which stays up above, but the stored
+    // network is neither scanned for nor attempted underneath the attempt.
+    if (trialPhase != TrialPhase::Idle) {
+        serviceTrial(now, events);
+        return;
+    }
+
     if (!stationIsConfigured) {
         startAp();
         apCloseAt = 0;
@@ -339,8 +523,9 @@ void service() {
         return;
     }
 
-    if (connected) {
-        credentialsProven = true;
+    if (stationConnected()) {
+        stationOutcome = ConnectionOutcome::Connected;
+        reconnectBackoffMs = kReconnectStartMs;
         if (!wasStationConnected) {
             if (MDNS.begin(mdnsName))
                 MDNS.addService("http", "tcp", 80);
@@ -365,32 +550,19 @@ void service() {
     }
     if (stationUnavailableAt == 0)
         stationUnavailableAt = now;
-    if (credentialsLatched()) {
-        if (provisioningFailure == StationState::Unconfigured) {
-            provisioningFailure = StationState::BadPassword;
-            credentialsLatchedAt = now;
-            // Only credentials that never associated are withdrawn. A network
-            // that worked before is kept, so the user updates a password
-            // instead of picking the network again.
-            credentialRejectionPending = !credentialsProven;
-        }
-        // The way out is new credentials, so offer the means to enter them now
-        // rather than after the unavailability delay.
-        startAp();
-        if (credentialsProven &&
-            static_cast<int32_t>(now - credentialsLatchedAt) >= kProvenRetryMs) {
-            credentialFailures = 0;
-            provisioningFailure = StationState::Unconfigured;
-            beginStation(configuration::snapshot());
-        }
-        return;
-    }
     if (static_cast<int32_t>(now - stationUnavailableAt) >= kStaUnavailableMs) {
         startAp();
     }
-    if (static_cast<int32_t>(now - stationRetryAt) >= 0) {
-        beginStation(configuration::snapshot());
+    // The same classifier the trial uses, on the same events. A network that
+    // changes its password a year later has to be described by the display and
+    // by /api/status, and two classifications of one event would drift apart.
+    if (events.disconnected && !voluntaryDisconnect(events.reason)) {
+        noteDisconnectReason(events);
+        stationOutcome = classifyDisconnect(events.reason);
     }
+    // Stored credentials are retried for ever on the backoff: they earned that
+    // by having worked once, and it is what heals a router reboot unattended.
+    serviceReconnect(now);
 }
 
 bool clearIdentity() {
@@ -403,13 +575,22 @@ bool clearIdentity() {
 
 void configurationChanged(const configuration::DeviceConfig &next) {
     stationIsConfigured = configuredWifi(next);
-    credentialFailures = 0;
-    credentialsProven = false;
+    stationOutcome = ConnectionOutcome::None;
+    reconnectBackoffMs = kReconnectStartMs;
+    attemptAfterScan = false;
     if (wasStationConnected)
         MDNS.end();
     wasStationConnected = false;
     apCloseAt = 0;
     stationUnavailableAt = 0;
+    // A trial commits the credentials it has just proved, and the station is
+    // already on that network. Restarting it would drop the very connection the
+    // trial exists to establish; service() adopts the live one on its next
+    // pass, which is also where mDNS and the setup AP's grace period restart.
+    if (stationIsConfigured && stationConnected() &&
+            strcmp(stationSsid, next.ssid) == 0) {
+        return;
+    }
     if (!stationIsConfigured) {
         stationSsid[0] = '\0';
         WiFi.disconnect(false, false);
@@ -420,15 +601,51 @@ void configurationChanged(const configuration::DeviceConfig &next) {
     beginStation(next);
 }
 
-bool takeCredentialRejection() {
-    const bool pending = credentialRejectionPending;
-    credentialRejectionPending = false;
-    return pending;
+void beginTrial(const WifiCredentials &candidate) {
+    trialCandidate = candidate;
+    trialOutcome = ConnectionOutcome::None;
+    trialRssi = 0;
+    // Staged only. The radio work starts on the next service() pass, after the
+    // HTTP response has left: the attempt can drop the very link that response
+    // has to travel on, and a phone that never receives it is left guessing.
+    trialPhase = TrialPhase::Starting;
 }
 
-void clearProvisioningFailure() {
-    provisioningFailure = StationState::Unconfigured;
-    credentialFailures = 0;
+void cancelTrial() {
+    switch (trialPhase) {
+        case TrialPhase::Attempting:
+            // An attempt the user abandoned has no verdict to report.
+            finishTrial(ConnectionOutcome::None, 0);
+            return;
+        case TrialPhase::TearingDown:
+            // Let the teardown finish. Cutting it short would let its own
+            // events reach the next trial and answer for it.
+            trialOutcome = ConnectionOutcome::None;
+            return;
+        case TrialPhase::Starting:
+        case TrialPhase::Idle:
+            // Staged but never started, or already finished: no radio work to
+            // undo. Dismissing a verdict is the same request, and it is what
+            // stops a later page load resurrecting an old failure.
+            trialPhase = TrialPhase::Idle;
+            trialOutcome = ConnectionOutcome::None;
+            return;
+    }
+}
+
+bool trialRunning() {
+    return trialPhase != TrialPhase::Idle;
+}
+
+TrialStatus trialStatus() {
+    TrialStatus result{};
+    result.running = trialRunning();
+    // The verdict is published only once the trial is fully idle, so one press
+    // gives one answer and Try again is never refused by a teardown.
+    result.outcome = result.running ? ConnectionOutcome::None : trialOutcome;
+    strncpy(result.ssid, trialCandidate.ssid, sizeof(result.ssid) - 1);
+    result.rssi = trialRssi;
+    return result;
 }
 
 bool stationConnected() {
@@ -442,8 +659,7 @@ Snapshot snapshot() {
     result.setupApActive = WiFi.AP.started();
     result.stationConfigured = stationIsConfigured;
     result.stationConnected = stationConnected();
-    result.stationState = stationState();
-    result.provisioningFailure = provisioningFailure;
+    result.stationOutcome = stationOutcome;
     result.stationRssi = result.stationConnected ? WiFi.RSSI() : 0;
     strncpy(result.stationSsid, stationSsid, sizeof(result.stationSsid) - 1);
     strncpy(result.setupSsid, deviceName, sizeof(result.setupSsid) - 1);
@@ -470,9 +686,25 @@ bool requestFromLocalInterface(const WiFiClient &client) {
 }
 
 void startScan() {
+    // A scan outranks an attempt in flight. The driver refuses to scan while
+    // it is connecting -- esp_wifi_scan_start returns ESP_ERR_WIFI_STATE, and
+    // esp_wifi_connect warns that a scan "will not be effective until
+    // connection between device and the AP is established" -- so an attempt
+    // that is still running would cost the user a press and answer "Could not
+    // scan". Dropping it costs nothing: the attempt returns on the next cycle,
+    // which serviceReconnect already sequences behind this scan. The departure
+    // is voluntary, and voluntaryDisconnect() keeps it out of the classifier.
+    // Never do this while connected: the setup AP can be scanned from during
+    // the grace window, and a live station connection is not a scan's to spend.
+    if (!stationConnected())
+        WiFi.disconnect(false, false);
     WiFi.scanDelete();
-    WiFi.scanNetworks(true);
-    currentScanState = ScanState::Scanning;
+    // Report the scan that actually started. Forcing Scanning after a failed
+    // start made scanState() resolve to Failed a moment later, so the user saw
+    // "Could not scan" and had to press twice.
+    currentScanState = WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING
+        ? ScanState::Scanning
+        : ScanState::Failed;
 }
 
 ScanState scanState() {

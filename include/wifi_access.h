@@ -13,27 +13,44 @@ enum class ScanState : uint8_t {
     Failed,
 };
 
-// Why the station is not on the network. The radio reports this; without it
-// a wrong password and an absent access point look identical to the user.
-enum class StationState : uint8_t {
-    Unconfigured = 0,
-    Connecting,
+// How an attempt on the station ended. The driver names the phase that failed
+// and never the cause: no station-side reason code means "wrong password", so
+// this vocabulary does not claim one. Execution and configuration are not
+// outcomes; Snapshot answers those with stationConnected and stationConfigured.
+enum class ConnectionOutcome : uint8_t {
+    None = 0,       // nothing attempted since boot
     Connected,
-    BadPassword,
+    SecurityMismatch,
     NotFound,
-    Failed,
+    AuthFailed,
+    CouldNotConnect,
+    CouldNotSave,   // trial only: joined the network, commit() failed
+};
+
+// Candidate credentials for a trial. Credentials only, never a whole
+// DeviceConfig: an attempt can last a minute, and committing a snapshot taken
+// at the start would silently revert any unrelated setting changed meanwhile.
+struct WifiCredentials {
+    char ssid[33];
+    char password[65];
+    uint8_t security;
+};
+
+struct TrialStatus {
+    // The verdict of the last trial. It outlives the page that started the
+    // trial, because the phone's link usually breaks during the attempt.
+    ConnectionOutcome outcome;
+    bool running;
+    char ssid[33];
+    // Signal at the moment the attempt failed, from the disconnect event.
+    int32_t rssi;
 };
 
 struct Snapshot {
     bool setupApActive;
     bool stationConfigured;
     bool stationConnected;
-    StationState stationState;
-    // Sticky verdict on the last credentials the user saved. The live state
-    // returns to connected or unconfigured once the failed credentials are
-    // withdrawn, so without this the reason for the withdrawal is lost before
-    // it can be shown.
-    StationState provisioningFailure;
+    ConnectionOutcome stationOutcome;
     int32_t stationRssi;
     char stationSsid[33];
     char setupSsid[33];
@@ -48,12 +65,10 @@ struct ScanResult {
     bool secured;
 };
 
-    void begin();
+    // A proved connection is committed from here, so this module needs the
+    // same apply callback the HTTP configuration path uses.
+    void begin(configuration::ApplyCallback apply);
     void service();
-    // True once, when credentials have been rejected often enough to be judged
-    // wrong. The caller withdraws them; they never became a working config.
-    bool takeCredentialRejection();
-    void clearProvisioningFailure();
     bool clearIdentity();
     void configurationChanged(const configuration::DeviceConfig &next);
     Snapshot snapshot();
@@ -61,6 +76,16 @@ struct ScanResult {
     const char *mdnsHost();
     bool requestFromSetupAp(const WiFiClient &client);
     bool requestFromLocalInterface(const WiFiClient &client);
+
+    // Nothing is stored until it has worked: beginTrial stages a candidate, and
+    // only a connection that completes is committed. The radio work starts on a
+    // later service() pass, after the HTTP response the attempt may cut off.
+    void beginTrial(const WifiCredentials &candidate);
+    // Cancels a running trial, and dismisses a finished one's verdict. Both are
+    // the same request: this trial no longer interests the user.
+    void cancelTrial();
+    bool trialRunning();
+    TrialStatus trialStatus();
 
 void startScan();
 ScanState scanState();

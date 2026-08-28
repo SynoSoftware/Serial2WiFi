@@ -21,16 +21,25 @@ enum class Event : uint8_t {
     RestartRequested,
 };
 
+// The overlay and the countdown describe one moment of one gesture and must
+// agree: a countdown drawn beside the wrong overlay is a lie about a factory
+// reset. They are published together so a reader cannot catch the pair
+// half-updated between two calls.
+struct Status {
+    Overlay overlay;
+    uint32_t resetCountdown;
+};
+
+// Starts the polling task. Everything below is called from the loop task; the
+// button state itself belongs to that task and to nothing else.
 void begin(uint32_t longPressMs, uint32_t longPressRepeatMs);
 void setLongPressMs(uint32_t longPressMs);
 void setLongPressRepeatMs(uint32_t longPressRepeatMs);
-void service();
 
 Event takeEvent();
 void reportSaveFailed();
 void reportFactoryReset(bool succeeded);
 
-Overlay overlay();
-uint32_t resetCountdown();
+Status status();
 
 }  // namespace prg_button

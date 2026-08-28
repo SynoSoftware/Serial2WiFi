@@ -2,9 +2,13 @@
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include <qrcode.h>
 #include <Wire.h>
 #include <cstring>
+#include <type_traits>
 
 #include "build_number.h"
 #include "display_history.h"
@@ -18,6 +22,14 @@ constexpr uint8_t kResetPin = 16;
 constexpr uint8_t kAddress = 0x3C;
 constexpr uint32_t kRefreshMs = 100;
 constexpr uint32_t kRateSampleMs = 3000;
+// Above the loop task, because the drawing itself is short and the transfer
+// that follows it blocks on the I2C driver rather than on the CPU, so loop()
+// keeps running through it either way. Below the Wi-Fi and event tasks, which
+// a panel must never delay. Pinned with the loop, whose frames it draws.
+constexpr UBaseType_t kTaskPriority = 2;
+// The live pages copy a 1 KB history ring onto the stack and the setup page
+// encodes a QR code on it, on top of the GFX call depth.
+constexpr uint32_t kTaskStackBytes = 8192;
 constexpr uint32_t kPageTitleMs = 1000;
 constexpr size_t kPayloadRows = 7;
 constexpr uint8_t kCompactFont = 1;
@@ -37,14 +49,24 @@ constexpr int16_t kSetupQrTextWidth = 128 - kSetupQrTextLeftPixels;
 // Dense screens must retain every required value. Short action and fault
 // feedback can use the larger font without sacrificing operational data.
 
+// The panel, the I2C bus and every pixel decision belong to the display task
+// alone. A full frame is roughly 1 KB over I2C and takes about 25 ms; nothing
+// on loop() may wait for that, so nothing on loop() may touch these.
 Adafruit_SSD1306 oled(128, 64, &Wire, kResetPin);
-bool ready = false;
-uint32_t lastRefresh = 0;
 uint32_t lastRateSample = 0;
 uint64_t lastSerialReceived = 0;
 uint64_t lastNetworkReceived = 0;
 uint32_t serialRate = 0;
 uint32_t networkRate = 0;
+
+// Written once by the display task when the panel answers, read by loop() to
+// decide whether gathering a frame is worth anything at all. One writer, one
+// flag, no ordering owed to anything else.
+bool ready = false;
+
+// Page selection, the presentation timers and the refresh cadence are loop()
+// state. They decide what a frame contains; the display task decides nothing.
+uint32_t lastRefresh = 0;
 
 enum class Page : uint8_t {
     Brand = 0,
@@ -98,6 +120,41 @@ struct PageObservation {
 };
 
 PageObservation previousObservation{};
+
+// What a frame shows. render() resolves exactly one of these from state loop()
+// already owns, which is why the display task never has to ask a question to
+// draw one.
+enum class Content : uint8_t {
+    Blank,
+    Overlay,
+    SerialError,
+    WifiTransition,
+    PageTitle,
+    Page,
+};
+
+// One frame, decided. Everything the drawing needs is copied in: the panel
+// must never read memory that loop() can change while a transfer is running,
+// and the display task must never reach back into wifi_access, configuration
+// or prg_button to find out what it is drawing.
+struct Frame {
+    Content content;
+    Page page;
+    prg_button::Overlay overlay;
+    uint32_t resetCountdown;
+    bool serialTrafficSeen;
+    configuration::DeviceConfig config;
+    RuntimeStatus status;
+};
+
+static_assert(
+    std::is_trivially_copyable<Frame>::value,
+    "Frame crosses a queue as memory, so it must be plain bytes");
+
+// A mailbox, not a backlog: only the newest frame is worth drawing, and a
+// panel that fell behind must catch up rather than replay. xQueueOverwrite
+// never blocks the loop, and the display task blocks here rather than polling.
+QueueHandle_t frameMailbox = nullptr;
 
 void formatRate(char *destination, size_t capacity, uint32_t value);
 void formatBytes(char *destination, size_t capacity, uint64_t value);
@@ -343,6 +400,29 @@ WifiIcon stationWifiIcon(int32_t rssi) {
     return WifiIcon::Weak;
 }
 
+// Three captions, not one per outcome. A 128x64 screen is not where anyone
+// diagnoses an auth mode, so a security mismatch folds into the last of them
+// and the phone says it properly. Never "password rejected": the device is
+// never told that, and "check password" is both actionable and supportable.
+// Nothing while the station is still trying: during setup the user is on their
+// phone, and at run time it is transient.
+const char *stationFailureCaption(wifi_access::ConnectionOutcome outcome) {
+    switch (outcome) {
+        case wifi_access::ConnectionOutcome::AuthFailed:
+            return "Check Wi-Fi password";
+        case wifi_access::ConnectionOutcome::NotFound:
+            return "Network not found";
+        case wifi_access::ConnectionOutcome::SecurityMismatch:
+        case wifi_access::ConnectionOutcome::CouldNotConnect:
+        case wifi_access::ConnectionOutcome::CouldNotSave:
+            return "Could not connect";
+        case wifi_access::ConnectionOutcome::None:
+        case wifi_access::ConnectionOutcome::Connected:
+            break;
+    }
+    return nullptr;
+}
+
 // This page answers one question: what is the station Wi-Fi doing? It never
 // tests the setup AP. The same renderer draws the transient connect and
 // disconnect feedback, so the two presentations cannot drift apart.
@@ -356,21 +436,21 @@ void renderWifiState(
         drawCenteredText("Wi-Fi not configured", kCompactFont, 0, 128, 32);
         return;
     }
-    if (status.provisioningFailure == wifi_access::StationState::BadPassword) {
-        // The one failure the user must act on, and the display may be the
-        // only channel telling them: the device is off the network, so the web
-        // UI is reachable solely over the setup AP they have to be told about.
-        drawCenteredText("Wi-Fi password", kCompactFont, 0, 128, 16);
-        drawCenteredText("rejected", kCompactFont, 0, 128, 28);
-        drawCenteredText(status.setupSsid, kCompactFont, 0, 128, 44);
-        return;
-    }
     if (!status.stationConnected) {
-        // The crossed-out artwork spans the full 64px height. There is no
-        // margin to label, and clipping the icon to make room would cost more
-        // than the label is worth.
-        shownWifiIcon = WifiIcon::Off;
-        drawWifiIcon(WifiIcon::Off);
+        const char *caption = stationFailureCaption(status.stationOutcome);
+        if (caption == nullptr) {
+            // The crossed-out artwork spans the full 64px height. There is no
+            // margin to label, and clipping the icon to make room would cost
+            // more than the label is worth.
+            shownWifiIcon = WifiIcon::Off;
+            drawWifiIcon(WifiIcon::Off);
+            return;
+        }
+        // The display may be the only channel carrying this: the device is off
+        // the network, so the web UI is reachable solely over the setup AP, and
+        // that AP reopens itself. The user can act on exactly what is written.
+        drawCenteredText(caption, kCompactFont, 0, 128, 24);
+        drawCenteredText(status.setupSsid, kCompactFont, 0, 128, 44);
         return;
     }
 
@@ -383,8 +463,8 @@ void renderWifiState(
     // Name to the left, address to the right. 21 compact glyphs span the row,
     // and the address is the value the user acts on, so it is never shortened
     // and the name gives up columns first. One blank column separates them.
-    const String ip = status.stationIp.toString();
-    const size_t ipChars = ip.length();
+    const char *const ip = status.stationIp;
+    const size_t ipChars = strlen(ip);
     const size_t ssidChars = ipChars + 1 < kCompactColumns ? kCompactColumns - ipChars - 1 : 0;
     char ssid[kCompactColumns + 1];
     snprintf(ssid, ssidChars + 1, "%s", status.stationSsid);
@@ -393,7 +473,7 @@ void renderWifiState(
     oled.setCursor(0, 56);
     oled.print(ssid);
     oled.setCursor(128 - static_cast<int16_t>(ipChars) * kCompactGlyphWidth, 56);
-    oled.print(ip.c_str());
+    oled.print(ip);
 }
 
 void renderSetupCredentials(
@@ -758,14 +838,10 @@ void renderSetupQr(
 
     const int16_t textLeft = kSetupQrTextLeftPixels;
     const int16_t textWidth = kSetupQrTextWidth;
-    const String setupIp = status.setupIp.toString();
+    const char *const setupIp = status.setupIp;
     drawCenteredText("OPEN", largestReadableFont("OPEN", textWidth), textLeft, textWidth, 24);
     drawCenteredText(
-        setupIp.c_str(),
-        largestReadableFont(setupIp.c_str(), textWidth),
-        textLeft,
-        textWidth,
-        40);
+        setupIp, largestReadableFont(setupIp, textWidth), textLeft, textWidth, 40);
 }
 
 void renderSerialError() {
@@ -834,15 +910,90 @@ void pushFrameIfChanged() {
     memcpy(panelFrame, oled.getBuffer(), sizeof(panelFrame));
 }
 
+// The byte rates are a presentation of the counters the frame already carries,
+// so they are sampled where they are drawn. Successive frames arrive at the
+// refresh cadence, which is what this interval is measured against.
+void sampleRates(const RuntimeStatus &status) {
+    const uint32_t now = millis();
+    if (lastRateSample == 0) lastRateSample = now;
+    if (now - lastRateSample < kRateSampleMs) return;
+    const uint32_t elapsed = now - lastRateSample;
+    serialRate = static_cast<uint32_t>(
+        (status.serialToNetworkReceived - lastSerialReceived) * 1000ULL / elapsed);
+    networkRate = static_cast<uint32_t>(
+        (status.networkToSerialReceived - lastNetworkReceived) * 1000ULL / elapsed);
+    lastSerialReceived = status.serialToNetworkReceived;
+    lastNetworkReceived = status.networkToSerialReceived;
+    lastRateSample = now;
+}
+
+void drawFrame(const Frame &frame) {
+    sampleRates(frame.status);
+    oled.clearDisplay();
+    oled.setTextSize(kCompactFont);
+    oled.setTextColor(SSD1306_WHITE);
+    oled.setTextWrap(false);
+    switch (frame.content) {
+        case Content::Overlay:
+            renderOverlay(frame.overlay, frame.resetCountdown);
+            break;
+        case Content::SerialError:
+            renderSerialError();
+            break;
+        case Content::WifiTransition:
+            renderWifiState(frame.config, frame.status, frame.serialTrafficSeen);
+            break;
+        case Content::PageTitle:
+            renderPageTitle(frame.page);
+            break;
+        case Content::Page:
+            pageDescription(frame.page).show(
+                frame.config, frame.status, frame.serialTrafficSeen);
+            break;
+        case Content::Blank:
+            // The screen saver, and the only frame that draws nothing at all.
+            break;
+    }
+}
+
+// The reset line, the bus and the controller are brought up here rather than in
+// begin(), so the first access to the panel already comes from its owner.
+void startPanel() {
+    pinMode(kResetPin, OUTPUT);
+    digitalWrite(kResetPin, LOW);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    digitalWrite(kResetPin, HIGH);
+    Wire.begin(kSdaPin, kSclPin);
+    if (!oled.begin(SSD1306_SWITCHCAPVCC, kAddress)) return;
+    oled.clearDisplay();
+    oled.setTextSize(kCompactFont);
+    oled.setTextColor(SSD1306_WHITE);
+    oled.setTextWrap(false);
+    oled.display();
+    // Published last. Until this is set renderDue() is false, so loop() gathers
+    // nothing and sends nothing, and the panel cannot be drawn on before it
+    // has been configured.
+    __atomic_store_n(&ready, true, __ATOMIC_RELEASE);
+}
+
+void displayTask(void *) {
+    startPanel();
+    Frame frame;
+    for (;;) {
+        // The only wait in this task. A panel with nothing new to show costs
+        // nothing: there is no polling here and no timeout, because a frame
+        // that never arrives is a frame with no reason to be drawn. A panel
+        // that never answered leaves ready false, so none ever arrives and
+        // this task rests here for good.
+        if (xQueueReceive(frameMailbox, &frame, portMAX_DELAY) != pdTRUE) continue;
+        drawFrame(frame);
+        pushFrameIfChanged();
+    }
+}
+
 }  // namespace
 
 void begin() {
-    pinMode(kResetPin, OUTPUT);
-    digitalWrite(kResetPin, LOW);
-    delay(20);
-    digitalWrite(kResetPin, HIGH);
-    Wire.begin(kSdaPin, kSclPin);
-    ready = oled.begin(SSD1306_SWITCHCAPVCC, kAddress);
     pageInitialized = false;
     screenSaverActive = false;
     renderRequested = true;
@@ -852,15 +1003,12 @@ void begin() {
     wifiTransitionObserved = false;
     wifiTransitionConnected = false;
     wifiTransitionUntil = 0;
-    shownWifiIcon = WifiIcon::Off;
     previousObservation = {};
-    if (ready) {
-        oled.clearDisplay();
-        oled.setTextSize(kCompactFont);
-        oled.setTextColor(SSD1306_WHITE);
-        oled.setTextWrap(false);
-        oled.display();
-    }
+    frameMailbox = xQueueCreate(1, sizeof(Frame));
+    if (frameMailbox == nullptr) return;
+    xTaskCreatePinnedToCore(
+        displayTask, "oledDisplay", kTaskStackBytes, nullptr, kTaskPriority, nullptr,
+        ARDUINO_RUNNING_CORE);
 }
 
 bool restoreIfHidden() {
@@ -891,30 +1039,24 @@ PageAction currentPageAction() {
 }
 
 bool renderDue() {
-    return ready && (renderRequested || millis() - lastRefresh >= kRefreshMs);
+    return __atomic_load_n(&ready, __ATOMIC_ACQUIRE) &&
+        (renderRequested || millis() - lastRefresh >= kRefreshMs);
 }
 
+// Decides what belongs on the panel and hands that decision to the display
+// task. Every line here reads or writes loop() state only; the frame it posts
+// is a copy, so nothing it touches afterwards can change what is being drawn.
 void render(
     const configuration::DeviceConfig &config,
     prg_button::Overlay activeOverlay,
     uint32_t countdown,
     bool serialTrafficSeen,
     const RuntimeStatus &status) {
+    if (!renderDue()) return;
     const uint32_t now = millis();
-    if (!ready || (!renderRequested && now - lastRefresh < kRefreshMs)) return;
     lastRefresh = now;
     renderRequested = false;
     if (lastUserInteraction == 0) lastUserInteraction = now;
-
-    if (lastRateSample == 0) lastRateSample = now;
-    if (now - lastRateSample >= kRateSampleMs) {
-        const uint32_t elapsed = now - lastRateSample;
-        serialRate = static_cast<uint32_t>((status.serialToNetworkReceived - lastSerialReceived) * 1000ULL / elapsed);
-        networkRate = static_cast<uint32_t>((status.networkToSerialReceived - lastNetworkReceived) * 1000ULL / elapsed);
-        lastSerialReceived = status.serialToNetworkReceived;
-        lastNetworkReceived = status.networkToSerialReceived;
-        lastRateSample = now;
-    }
 
     const bool overlayVisible = activeOverlay != prg_button::Overlay::None;
 
@@ -949,37 +1091,39 @@ void render(
         screenSaverActive = true;
     }
 
+    const bool titleShowing = pageTitleVisible &&
+        pageDescription(currentPage).introduction != nullptr &&
+        now - pageTitleStartedAt < kPageTitleMs;
+    if (pageTitleVisible && !titleShowing) pageTitleVisible = false;
+
+    Frame frame{};
     // A station transition lights a blanked panel for the notification only. It
     // deliberately does not touch lastUserInteraction: a network event is not
     // user interaction, so the panel blanks again the moment the deadline
     // passes, and an unstable link cannot hold the display on.
     if (screenSaverActive && !overlayVisible && !status.serialError &&
             wifiTransitionUntil == 0) {
-        oled.clearDisplay();
-        pushFrameIfChanged();
-        return;
-    }
-
-    oled.clearDisplay();
-    oled.setTextSize(kCompactFont);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setTextWrap(false);
-    const PageDescription &description = pageDescription(currentPage);
-    const bool titleShowing = pageTitleVisible && description.introduction != nullptr &&
-        now - pageTitleStartedAt < kPageTitleMs;
-    if (pageTitleVisible && !titleShowing) pageTitleVisible = false;
-    if (overlayVisible) {
-        renderOverlay(activeOverlay, countdown);
+        frame.content = Content::Blank;
+    } else if (overlayVisible) {
+        frame.content = Content::Overlay;
     } else if (status.serialError) {
-        renderSerialError();
+        frame.content = Content::SerialError;
     } else if (wifiTransitionUntil != 0) {
-        renderWifiState(config, status, serialTrafficSeen);
+        frame.content = Content::WifiTransition;
     } else if (titleShowing) {
-        renderPageTitle(currentPage);
+        frame.content = Content::PageTitle;
     } else {
-        description.show(config, status, serialTrafficSeen);
+        frame.content = Content::Page;
     }
-    pushFrameIfChanged();
+    frame.page = currentPage;
+    frame.overlay = activeOverlay;
+    frame.resetCountdown = countdown;
+    frame.serialTrafficSeen = serialTrafficSeen;
+    frame.config = config;
+    frame.status = status;
+    // Overwrite, never send: a frame still queued has already been overtaken,
+    // and loop() must not wait for the panel to catch up with it.
+    xQueueOverwrite(frameMailbox, &frame);
 }
 
 }  // namespace oled_display

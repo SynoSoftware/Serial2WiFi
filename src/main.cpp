@@ -113,19 +113,6 @@ void serviceButtonActions() {
     }
 }
 
-// Credentials that never associated are withdrawn rather than left as the
-// device's configuration. For a first setup that leaves it unconfigured, which
-// is the same outcome; for a re-configuration it stops a typo from displacing
-// a network that worked. Either way the setup AP stays up and the verdict is
-// reported until new credentials are saved.
-void withdrawRejectedCredentials() {
-    configuration::DeviceConfig candidate = configuration::snapshot();
-    candidate.ssid[0] = 0;
-    candidate.wifiPassword[0] = 0;
-    candidate.wifiSecurity = static_cast<uint8_t>(configuration::WifiSecurity::Unset);
-    configuration::commit(candidate, applyConfiguration, nullptr);
-}
-
 oled_display::RuntimeStatus runtimeStatus() {
     const wifi_access::Snapshot wifi = wifi_access::snapshot();
     const network_transport::Snapshot transport = network_transport::snapshot();
@@ -140,9 +127,9 @@ oled_display::RuntimeStatus runtimeStatus() {
     result.serialError = serial.error;
     strncpy(result.setupSsid, wifi.setupSsid, sizeof(result.setupSsid) - 1);
     strncpy(result.setupPassword, wifi.setupPassword, sizeof(result.setupPassword) - 1);
-    result.setupIp = wifi.setupIp;
-    result.provisioningFailure = wifi.provisioningFailure;
-    result.stationIp = wifi.stationIp;
+    wifi.setupIp.toString().toCharArray(result.setupIp, sizeof(result.setupIp));
+    result.stationOutcome = wifi.stationOutcome;
+    wifi.stationIp.toString().toCharArray(result.stationIp, sizeof(result.stationIp));
     result.serialToNetworkReceived = transport.serialToNetworkReceived;
     result.serialToNetworkDropped = transport.serialToNetworkDropped;
     result.networkToSerialReceived = transport.networkToSerialReceived;
@@ -160,7 +147,7 @@ void setup() {
     configuration::begin();
     const configuration::DeviceConfig initialConfig = configuration::snapshot();
     prg_button::begin(initialConfig.longPressMs, initialConfig.longPressRepeatMs);
-    wifi_access::begin();
+    wifi_access::begin(applyConfiguration);
     management_auth::begin();
     oled_display::begin();
     network_transport::begin();
@@ -171,17 +158,21 @@ void setup() {
 }
 
 void loop() {
-    prg_button::service();
+    // The button is polled on its own task and the panel is drawn on another.
+    // What is left here is every decision either of them produces, which is
+    // what keeps the radio, the configuration and the carousel single-owned.
     serviceButtonActions();
     wifi_access::service();
-    if (wifi_access::takeCredentialRejection()) withdrawRejectedCredentials();
     http_server::service();
     browser_terminal::service();
     if (oled_display::renderDue()) {
+        // One read of the button, not two: the overlay and its countdown
+        // describe the same moment of the same gesture.
+        const prg_button::Status button = prg_button::status();
         oled_display::render(
             configuration::snapshot(),
-            prg_button::overlay(),
-            prg_button::resetCountdown(),
+            button.overlay,
+            button.resetCountdown,
             serial_port::snapshot().trafficSeen,
             runtimeStatus());
     }

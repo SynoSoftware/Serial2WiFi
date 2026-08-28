@@ -108,9 +108,12 @@ select { appearance: none; padding-right: 34px; background-image: var(--select-a
 input:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--text); }
 input:disabled, select:disabled { color: var(--muted); background: var(--surface-subtle); cursor: default; opacity: .7; }
 button:focus-visible, input:focus-visible, select:focus-visible, .terminal-output:focus-visible, .segmented-option input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
-button { min-height: var(--control-height); padding: 6px 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; font-weight: 600; cursor: pointer; }
+button { min-height: var(--control-height); min-width: 120px; padding: 6px 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; font-weight: 600; cursor: pointer; }
 button:disabled { color: var(--muted); cursor: default; opacity: .55; }
-.primary, .row-action { min-width: 120px; }
+/* One size for every command button, so no row of them can look ragged. Only
+   buttons that are not commands opt out: an icon alone, a tab, a list row, and
+   the terminal toolbar, which sets its own single width below. */
+.icon-button, .password-toggle, .tab, .network-row { min-width: 0; }
 .primary { color: #fff; background: var(--accent); }
 .primary:hover:not(:disabled) { background: var(--accent-hover); }
 .primary:active:not(:disabled) { background: var(--accent-pressed); }
@@ -124,7 +127,6 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 
 .field-error { margin: 6px 0 0; color: var(--danger); font-size: .8rem; line-height: 1.35; }
 .field-help { margin: 6px 0 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
-.pending-label { margin-left: 8px; color: var(--warning); font-size: .75rem; font-weight: 400; }
 .muted { color: var(--muted); }
 .success-text { color: var(--success); }
 
@@ -133,9 +135,7 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .setting-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setting-value strong { font-weight: 600; }
 .empty-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 40px; color: var(--muted); }
-.setup-choice-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: min(100%, 390px); }
-.setup-choice-actions button { width: 100%; }
-.network-transaction-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+.network-transaction-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 
 .editor-panel { margin-top: 10px; }
 .wifi-editor { width: 100%; }
@@ -144,6 +144,7 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .editor-title span { color: var(--muted); font-size: .8rem; }
 .editor-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .scan-state { color: var(--muted); font-size: .82rem; }
+.trial-message { margin: 12px 0 0; color: var(--danger); font-size: .88rem; line-height: 1.5; }
 .progress { position: relative; height: 2px; margin-bottom: 9px; overflow: hidden; background: var(--line); }
 .progress span { position: absolute; top: 0; bottom: 0; width: 32%; background: var(--accent); animation: progress 1.1s ease-in-out infinite; }
 .network-list { max-height: 280px; overflow: auto; }
@@ -216,6 +217,7 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .save-state[data-state="success"] { color: var(--success); }
 .save-state[data-state="warning"] { color: var(--warning); }
 .save-state[data-state="danger"] { color: var(--danger); }
+.wifi-state { margin-top: 12px; }
 
 .bridge-summary { margin-bottom: 24px; padding: 8px 0 22px; border-bottom: 1px solid var(--line); text-align: center; }
 .bridge-summary .section-title { justify-content: center; }
@@ -253,7 +255,9 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .terminal-check { display: inline-flex; align-items: center; gap: 7px; min-height: var(--control-height); margin: 0; color: var(--muted); font-size: .78rem; font-weight: 400; white-space: nowrap; }
 .terminal-check input { width: 17px; height: 17px; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); appearance: auto; }
 .terminal-actions { display: flex; gap: 4px; }
-.toolbar-button { width: auto; min-height: var(--control-height); padding: 5px 10px; border: 0; font-size: .8rem; }
+/* One width for the toolbar's own scale, so Pause becoming Resume cannot
+   move Clear sideways. */
+.toolbar-button { min-width: 100px; min-height: var(--control-height); padding: 5px 10px; border: 0; font-size: .8rem; }
 .toolbar-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .terminal-output { width: 100%; height: clamp(300px, 54vw, 500px); margin: 0; overflow: auto; padding: 14px; color: var(--terminal-text); background: var(--terminal-bg); border: 0; border-radius: 0; font-family: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; tab-size: 4; white-space: pre-wrap; cursor: text; }
 .terminal-sent { color: var(--terminal-sent); }
@@ -265,7 +269,6 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .terminal-footer span:first-child { white-space: nowrap; }
 .terminal-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 8px 10px; background: var(--surface-subtle); }
 .terminal-compose input, .terminal-compose button { min-height: var(--control-height); }
-.terminal-compose button { min-width: 76px; }
 
 body.terminal-active { height: 100dvh; overflow: hidden; }
 body.terminal-active .shell { display: flex; flex-direction: column; height: 100dvh; padding-bottom: 12px; }
@@ -315,14 +318,13 @@ body.terminal-active .terminal-output { flex: 1 1 auto; min-height: 0; height: a
     .shell { width: min(calc(100% - 24px), 880px); }
     .brand-row { gap: 10px; }
     .product-name { font-size: 1.25rem; }
-    .brand-action { padding-inline: 9px; }
+    .brand-action { min-width: 0; padding-inline: 9px; }
     .tab { min-width: 0; padding-inline: 4px; font-size: .88rem; }
     .view-content { padding-top: 18px; }
     .settings-section { margin-bottom: 24px; padding-bottom: 24px; }
     .section-heading-row { gap: 10px; }
     .runtime-state { max-width: 56%; white-space: normal; }
     .empty-setting { align-items: stretch; flex-direction: column; gap: 12px; }
-    .setup-choice-actions { width: 100%; max-width: none; }
     .field-grid, .network-grid, .tcp-connect-grid { grid-template-columns: 1fr; }
     .setting-row { grid-template-columns: 78px minmax(0, 1fr) auto; gap: 8px; }
     .setting-row .secondary-button { min-width: 0; padding-inline: 8px; }
@@ -356,7 +358,7 @@ body.terminal-active .terminal-output { flex: 1 1 auto; min-height: 0; height: a
     .device-name { max-width: 80px; font-size: .78rem; }
     .brand-name { display: none; }
     .tab { font-size: .82rem; }
-    .serial-grid, .setup-choice-actions { grid-template-columns: 1fr; }
+    .serial-grid { grid-template-columns: 1fr; }
     .terminal-compose { grid-template-columns: 1fr; }
     .terminal-compose button { width: 100%; }
 }

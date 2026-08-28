@@ -16,9 +16,14 @@ struct RuntimeStatus {
     bool serialError;
     char setupSsid[33];
     char setupPassword[17];
-    wifi_access::StationState provisioningFailure;
-    IPAddress setupIp;
-    IPAddress stationIp;
+    wifi_access::ConnectionOutcome stationOutcome;
+    // Printed here rather than on the display, which wants nothing else from
+    // an address. This struct is copied to the display task as memory, and
+    // IPAddress derives from Printable, so it carries a vtable pointer that a
+    // queue has no business copying. Both interfaces are IPv4, so 15 digits
+    // and a terminator is the whole of what toString() can produce.
+    char setupIp[16];
+    char stationIp[16];
     uint64_t serialToNetworkReceived;
     uint64_t serialToNetworkDropped;
     uint64_t networkToSerialReceived;
