@@ -10,7 +10,6 @@ namespace {
 
 Preferences preferences;
 SemaphoreHandle_t configurationMutex = nullptr;
-SemaphoreHandle_t commitMutex = nullptr;
 DeviceConfig currentConfig{};
 
 constexpr uint32_t kSupportedBauds[] = {
@@ -70,7 +69,6 @@ DeviceConfig factoryDefaults() {
 
 void begin() {
     configurationMutex = xSemaphoreCreateMutex();
-    commitMutex = xSemaphoreCreateMutex();
     currentConfig = factoryDefaults();
     if (!readStored(currentConfig)) storeFactoryDefaults(currentConfig);
 }
@@ -218,28 +216,21 @@ ValidationError validationError(const DeviceConfig &candidate) {
     return ValidationError::None;
 }
 
-bool validate(const DeviceConfig &candidate) {
-    return validationError(candidate) == ValidationError::None;
-}
-
 bool commit(
     const DeviceConfig &candidate,
     ApplyCallback apply,
     bool *runtimeApplied) {
     if (runtimeApplied != nullptr) *runtimeApplied = false;
-    if (configurationMutex == nullptr || commitMutex == nullptr ||
-            xSemaphoreTake(commitMutex, portMAX_DELAY) != pdTRUE) {
-        return false;
-    }
+    if (configurationMutex == nullptr) return false;
 
     bool committed = false;
     DeviceConfig previous{};
-    if (validate(candidate) && preferences.begin("s2w", false)) {
+    if (validationError(candidate) == ValidationError::None &&
+            preferences.begin("s2w", false)) {
         const size_t written = preferences.putBytes("cfg", &candidate, sizeof(candidate));
         preferences.end();
         if (written == sizeof(candidate)) {
             if (xSemaphoreTake(configurationMutex, portMAX_DELAY) != pdTRUE) {
-                xSemaphoreGive(commitMutex);
                 return false;
             }
             previous = currentConfig;
@@ -250,21 +241,18 @@ bool commit(
     }
 
     if (committed && apply != nullptr) {
-        // The commit lock serializes runtime transitions, while the state lock
-        // is released before UART, Wi-Fi, or transport work begins.
+        // Only the loop task commits, so runtime transitions are serialized by
+        // construction; the state lock is released before UART, Wi-Fi, or
+        // transport work begins.
         const bool applied = apply(previous, candidate);
         if (runtimeApplied != nullptr) *runtimeApplied = applied;
     }
-    xSemaphoreGive(commitMutex);
     return committed;
 }
 
 bool factoryReset(ApplyCallback apply, bool *runtimeApplied) {
     if (runtimeApplied != nullptr) *runtimeApplied = false;
-    if (configurationMutex == nullptr || commitMutex == nullptr ||
-            xSemaphoreTake(commitMutex, portMAX_DELAY) != pdTRUE) {
-        return false;
-    }
+    if (configurationMutex == nullptr) return false;
 
     bool reset = false;
     if (preferences.begin("s2w", false)) {
@@ -272,7 +260,6 @@ bool factoryReset(ApplyCallback apply, bool *runtimeApplied) {
         preferences.end();
         if (reset) {
             if (xSemaphoreTake(configurationMutex, portMAX_DELAY) != pdTRUE) {
-                xSemaphoreGive(commitMutex);
                 return false;
             }
             const DeviceConfig previous = currentConfig;
@@ -286,7 +273,6 @@ bool factoryReset(ApplyCallback apply, bool *runtimeApplied) {
         }
     }
 
-    xSemaphoreGive(commitMutex);
     return reset;
 }
 

@@ -88,7 +88,6 @@ bool commit(
     bool *runtimeApplied = nullptr);
 bool factoryReset(ApplyCallback apply, bool *runtimeApplied = nullptr);
 ValidationError validationError(const DeviceConfig &config);
-bool validate(const DeviceConfig &config);
 
 const char *tcpModeName(TcpMode mode);
 bool tcpModeFromName(const char *name, TcpMode &mode);

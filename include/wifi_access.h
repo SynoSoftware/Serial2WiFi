@@ -66,27 +66,27 @@ struct ScanResult {
     bool secured;
 };
 
-    // A proved connection is committed from here, so this module needs the
-    // same apply callback the HTTP configuration path uses.
-    void begin(configuration::ApplyCallback apply);
-    void service();
-    bool clearIdentity();
-    void configurationChanged(const configuration::DeviceConfig &next);
-    Snapshot snapshot();
-    bool stationConnected();
-    const char *mdnsHost();
-    bool requestFromSetupAp(const WiFiClient &client);
-    bool requestFromLocalInterface(const WiFiClient &client);
+// A proved connection is committed from here, so this module needs the
+// same apply callback the HTTP configuration path uses.
+void begin(configuration::ApplyCallback apply);
+void service();
+bool clearIdentity();
+void configurationChanged(const configuration::DeviceConfig &next);
+Snapshot snapshot();
+bool stationConnected();
+const char *mdnsHost();
+bool requestFromSetupAp(const WiFiClient &client);
+bool requestFromLocalInterface(const WiFiClient &client);
 
-    // Nothing is stored until it has worked: beginTrial stages a candidate, and
-    // only a connection that completes is committed. The radio work starts on a
-    // later service() pass, after the HTTP response the attempt may cut off.
-    void beginTrial(const WifiCredentials &candidate);
-    // Cancels a running trial, and dismisses a finished one's verdict. Both are
-    // the same request: this trial no longer interests the user.
-    void cancelTrial();
-    bool trialRunning();
-    TrialStatus trialStatus();
+// Nothing is stored until it has worked: beginTrial stages a candidate, and
+// only a connection that completes is committed. The radio work starts on a
+// later service() pass, after the HTTP response the attempt may cut off.
+void beginTrial(const WifiCredentials &candidate);
+// Cancels a running trial, and dismisses a finished one's verdict. Both are
+// the same request: this trial no longer interests the user.
+void cancelTrial();
+bool trialRunning();
+TrialStatus trialStatus();
 
 void startScan();
 ScanState scanState();

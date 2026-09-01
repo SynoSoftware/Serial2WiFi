@@ -1998,15 +1998,22 @@
         }
     }
 
+    // Whether the TCP side has been given somewhere to be, answered by the
+    // field the mode actually uses. The Setup chip and the Status diagram
+    // both ask here, so they cannot disagree about the same reading.
+    function isTcpConfigured(status, mode) {
+        return mode === 'connect'
+            ? Boolean(status.tcpRemoteHost) && Number(status.tcpRemotePort) > 0
+            : Number(status.tcpListenPort) > 0;
+    }
+
     function tcpRuntime(status) {
         if (!status) return { text: '', state: 'neutral' };
         const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
         const state = status.tcpState;
         const remote = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
         const listenPort = Number(status.tcpListenPort) || 0;
-        const configured = mode === 'listen'
-            ? listenPort > 0
-            : Boolean(status.tcpRemoteHost) && Number(status.tcpRemotePort) > 0;
+        const configured = isTcpConfigured(status, mode);
 
         switch (state) {
             case 'disabled':
@@ -2101,9 +2108,7 @@
         const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
         const remote = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
         const listenPort = Number(status.tcpListenPort) || 0;
-        const tcpConfigured = mode === 'listen'
-            ? listenPort > 0
-            : Boolean(status.tcpRemoteHost) && Number(status.tcpRemotePort) > 0;
+        const tcpConfigured = isTcpConfigured(status, mode);
         let state = 'neutral';
         let title = t('common.notConfigured');
         let detail = '';

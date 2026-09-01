@@ -102,6 +102,10 @@ void start(
         portEXIT_CRITICAL(&stateMux);
         display_history::clear();
     }
+    // Waiting for writeBytes() only proves the UART accepted the bytes, not
+    // that they left the wire, and Serial.end() detaches TX mid-frame. The
+    // drain is a busy wait on this task, at most ~0.5 s of FIFO at 2400 baud.
+    Serial.flush(true);
     Serial.end();
     Serial.setRxBufferSize(8192);
     Serial.begin(
@@ -112,12 +116,7 @@ void start(
         false);
     // HardwareSerial::begin() is void; its bool conversion is the framework's
     // only driver-start result, so failed restarts must leave forwarding off.
-    if (!Serial) {
-        portENTER_CRITICAL(&stateMux);
-        writeInProgress = false;
-        portEXIT_CRITICAL(&stateMux);
-        return;
-    }
+    if (!Serial) return;
     Serial.setHwFlowCtrlMode(UART_HW_FLOWCTRL_DISABLE);
     Serial.onReceive(receiveHandler, false);
     Serial.onReceiveError(errorHandler);

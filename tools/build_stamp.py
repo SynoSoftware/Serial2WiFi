@@ -1,6 +1,6 @@
 # Produces the two build numbers the device reports, both as yymmdd-hhmmss.
 #
-# The firmware number is generated into the build directory instead of being
+# The firmware number is generated into include/build_number.h instead of being
 # derived from __DATE__/__TIME__. Those macros record when one translation
 # unit last recompiled, which on an incremental build is not when this image
 # was produced.

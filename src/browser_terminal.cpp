@@ -152,10 +152,6 @@ bool readAvailable(Client &client) {
     return true;
 }
 
-bool binaryFrameAccepted(const Client &client, const uint8_t *data, size_t length) {
-    return network_transport::submitTerminalToSerial(data, length);
-}
-
 ParseResult parseOneFrame(Client &client) {
     const size_t messagePrefix = client.binaryMessageInProgress ?
         client.fragmentedLength : 0;
@@ -210,7 +206,8 @@ ParseResult parseOneFrame(Client &client) {
     if (opcode == 0x02) {
         if (client.binaryMessageInProgress) return ParseResult::Close;
         if (finalFrame) {
-            binaryFrameAccepted(client, payload, static_cast<size_t>(payloadLength));
+            network_transport::submitTerminalToSerial(
+                payload, static_cast<size_t>(payloadLength));
         } else {
             memmove(client.receiveBuffer, payload, static_cast<size_t>(payloadLength));
             client.fragmentedLength = static_cast<size_t>(payloadLength);
@@ -227,7 +224,8 @@ ParseResult parseOneFrame(Client &client) {
             static_cast<size_t>(payloadLength));
         client.fragmentedLength += static_cast<size_t>(payloadLength);
         if (finalFrame) {
-            binaryFrameAccepted(client, client.receiveBuffer, client.fragmentedLength);
+            network_transport::submitTerminalToSerial(
+                client.receiveBuffer, client.fragmentedLength);
             client.fragmentedLength = 0;
             client.binaryMessageInProgress = false;
         }

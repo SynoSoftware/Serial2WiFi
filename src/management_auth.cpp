@@ -104,30 +104,27 @@ bool cookieMatchesSession(const char *cookieHeader) {
     }
 
     const char *cursor = cookieHeader;
-    while (*cursor != '\0') {
-        while (*cursor == ' ' || *cursor == ';') ++cursor;
-        if (*cursor == '\0') break;
-        const char *value = strstr(cursor, "s2w_session=");
-        if (value == nullptr) return false;
-        if (value != cursor) {
-            const char preceding = value[-1];
-            if (preceding != ' ' && preceding != ';') return false;
-        }
-        value += strlen("s2w_session=");
-        size_t length = 0;
-        while (value[length] != '\0' && value[length] != ';' &&
-                value[length] != ' ') {
-            ++length;
-        }
-        if (length != kSessionTextLength) return false;
-        uint8_t difference = 0;
-        for (size_t index = 0; index < kSessionTextLength; ++index) {
-            difference |= static_cast<uint8_t>(
-                value[index] ^ sessionText[index]);
-        }
-        return difference == 0;
+    while (*cursor == ' ' || *cursor == ';') ++cursor;
+    // The first occurrence of the name decides; an embedded match rejects
+    // rather than searches on. One strstr answers what a browser sends: a
+    // single s2w_session cookie.
+    const char *value = strstr(cursor, "s2w_session=");
+    if (value == nullptr) return false;
+    if (value != cursor) {
+        const char preceding = value[-1];
+        if (preceding != ' ' && preceding != ';') return false;
     }
-    return false;
+    value += strlen("s2w_session=");
+    size_t length = 0;
+    while (value[length] != '\0' && value[length] != ';' &&
+            value[length] != ' ') {
+        ++length;
+    }
+    if (length != kSessionTextLength) return false;
+    return constantTimeEqual(
+        reinterpret_cast<const uint8_t *>(value),
+        reinterpret_cast<const uint8_t *>(sessionText),
+        kSessionTextLength);
 }
 
 PasswordResult writeNewPassword(const char *newPassword) {

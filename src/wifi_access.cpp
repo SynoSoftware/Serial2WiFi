@@ -239,8 +239,11 @@ void startAp() {
     // It was added and reverted three times. Capture works only through the
     // legacy path: the wildcard DNS below plus the HTTP 302 probe responses
     // in http_server.
-    // Captive clients ask DNS for their own probe hostnames. Wildcarding only
-    // the setup interface sends those probes to the local web UI.
+    // Captive clients ask DNS for their own probe hostnames, and the answer has
+    // to be the local web UI. The "*" is a domain wildcard, not an interface
+    // one, and the socket listens on every interface: any DNS query reaching
+    // this device is answered with the setup address for as long as the AP
+    // is up.
     startCaptiveDns();
 }
 
@@ -507,7 +510,6 @@ void service() {
 
     if (apIsActive) {
         startCaptiveDns();
-        dnsServer.processNextRequest();
     }
 
     // One radio, one owner, and while a trial runs the owner is the trial. The

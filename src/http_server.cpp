@@ -57,6 +57,8 @@ bool parseUnsigned(const String &text, uint32_t &value) {
     return true;
 }
 
+// High bytes pass through raw, so an SSID that is not valid UTF-8 cannot make
+// the round trip through the JSON and form pipeline. That limit is accepted.
 String escaped(const String &value) {
     String result;
     result.reserve(value.length() + 8);
@@ -178,15 +180,14 @@ const char *authenticationState(bool authenticated) {
 }
 
 void sendForbidden() {
-    server.sendHeader("Cache-Control", "no-store");
-    server.send(403, "application/json", "{\"error\":\"configuration_not_allowed\"}");
+    sendJson("{\"error\":\"configuration_not_allowed\"}", 403);
 }
 
 void sendUnauthorized() {
     sendJson("{\"error\":\"authentication_required\"}", 401);
 }
 
-void sendAuthError(const char *field, const char *message, int status = 400) {
+void sendFieldError(const char *field, const char *message, int status = 400) {
     String body = "{\"error\":\"" + String(message) + "\",\"field\":\"" +
         String(field) + "\"}";
     sendJson(body, status);
@@ -278,6 +279,9 @@ void handleTerminal() {
             !sameOrigin()) {
         return server.send(403, "text/plain", "WebSocket rejected");
     }
+    // Returning without a response is correct here: the framework injects no
+    // 404 after the handler and never reads the upgraded socket again, and the
+    // by-value Client copy holds the refcount that keeps that socket alive.
     if (!browser_terminal::accept(
             server.client(),
             server.header("Sec-WebSocket-Key").c_str())) {
@@ -366,7 +370,7 @@ void handleAuthLogin() {
     if (!canonicalLocalRequest()) return sendForbidden();
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
     if (!server.hasArg("password")) {
-        return sendAuthError("password", "password_required");
+        return sendFieldError("password", "password_required");
     }
 
     switch (management_auth::login(server.arg("password").c_str())) {
@@ -401,7 +405,7 @@ void handleAuthPassword() {
             return sendJson("{\"error\":\"bootstrap_requires_setup_ap\"}", 403);
         }
         if (!server.hasArg("newPassword")) {
-            return sendAuthError("newPassword", "password_required");
+            return sendFieldError("newPassword", "password_required");
         }
         result = management_auth::createPassword(
             server.arg("newPassword").c_str());
@@ -410,10 +414,10 @@ void handleAuthPassword() {
             return sendUnauthorized();
         }
         if (!server.hasArg("currentPassword")) {
-            return sendAuthError("currentPassword", "password_required");
+            return sendFieldError("currentPassword", "password_required");
         }
         if (!server.hasArg("newPassword")) {
-            return sendAuthError("newPassword", "password_required");
+            return sendFieldError("newPassword", "password_required");
         }
         result = management_auth::changePassword(
             server.arg("currentPassword").c_str(),
@@ -425,11 +429,11 @@ void handleAuthPassword() {
             clearSessionCookie();
             return sendJson("{\"ok\":true}");
         case management_auth::PasswordResult::Invalid:
-            return sendAuthError("newPassword", "invalid_password");
+            return sendFieldError("newPassword", "invalid_password");
         case management_auth::PasswordResult::AlreadySet:
             return sendJson("{\"error\":\"password_already_set\"}", 409);
         case management_auth::PasswordResult::CurrentPasswordIncorrect:
-            return sendAuthError("currentPassword", "incorrect_password", 403);
+            return sendFieldError("currentPassword", "incorrect_password", 403);
         case management_auth::PasswordResult::StorageFailure:
             return sendJson("{\"error\":\"password_save_failed\"}", 500);
     }
@@ -453,11 +457,6 @@ void handleConfigGet() {
     body += ",\"csrfToken\":\"" + String(csrfToken) + "\"";
     body += "}";
     sendJson(body);
-}
-
-void configError(const char *field, const char *message) {
-    String body = "{\"error\":\"" + String(message) + "\",\"field\":\"" + String(field) + "\"}";
-    sendJson(body, 400);
 }
 
 bool completeConfigurationRequest() {
@@ -486,31 +485,31 @@ void sendValidationError(configuration::ValidationError error) {
         case configuration::ValidationError::None:
             return;
         case configuration::ValidationError::Schema:
-            return configError("configuration", "invalid_schema");
+            return sendFieldError("configuration", "invalid_schema");
         case configuration::ValidationError::Baud:
-            return configError("baud", "unsupported_baud");
+            return sendFieldError("baud", "unsupported_baud");
         case configuration::ValidationError::Framing:
-            return configError("framing", "invalid_framing");
+            return sendFieldError("framing", "invalid_framing");
         case configuration::ValidationError::WifiSsid:
-            return configError("ssid", "too_long");
+            return sendFieldError("ssid", "too_long");
         case configuration::ValidationError::WifiSecurity:
-            return configError("wifiSecurity", "invalid_security");
+            return sendFieldError("wifiSecurity", "invalid_security");
         case configuration::ValidationError::WifiPassword:
-            return configError("wifiPassword", "invalid_password");
+            return sendFieldError("wifiPassword", "invalid_password");
         case configuration::ValidationError::TcpMode:
-            return configError("tcpMode", "invalid_mode");
+            return sendFieldError("tcpMode", "invalid_mode");
         case configuration::ValidationError::TcpListenPort:
-            return configError("tcpListenPort", "invalid_port");
+            return sendFieldError("tcpListenPort", "invalid_port");
         case configuration::ValidationError::TcpRemoteHost:
-            return configError("tcpRemoteHost", "invalid_host");
+            return sendFieldError("tcpRemoteHost", "invalid_host");
         case configuration::ValidationError::TcpRemotePort:
-            return configError("tcpRemotePort", "invalid_port");
+            return sendFieldError("tcpRemotePort", "invalid_port");
         case configuration::ValidationError::LongPress:
-            return configError("longPressMs", "invalid_timeout");
+            return sendFieldError("longPressMs", "invalid_timeout");
         case configuration::ValidationError::LongPressRepeat:
-            return configError("longPressRepeatMs", "invalid_timeout");
+            return sendFieldError("longPressRepeatMs", "invalid_timeout");
         case configuration::ValidationError::ScreenSaver:
-            return configError("screenSaverSeconds", "invalid_timeout");
+            return sendFieldError("screenSaverSeconds", "invalid_timeout");
         default:
             sendJson("{\"error\":\"invalid_configuration\"}", 500);
             return;
@@ -521,7 +520,7 @@ void handleConfigPost() {
     if (!requireConfigurationAccess()) return;
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
     if (!completeConfigurationRequest()) {
-        return configError("configuration", "incomplete_request");
+        return sendFieldError("configuration", "incomplete_request");
     }
 
     const configuration::DeviceConfig current = configuration::snapshot();
@@ -539,12 +538,12 @@ void handleConfigPost() {
     const String longPressRepeat = server.arg("longPressRepeatMs");
     const String screenSaver = server.arg("screenSaverSeconds");
 
-    if (ssid.length() > 32) return configError("ssid", "too_long");
-    if (password.length() > 64) return configError("wifiPassword", "too_long");
+    if (ssid.length() > 32) return sendFieldError("ssid", "too_long");
+    if (password.length() > 64) return sendFieldError("wifiPassword", "too_long");
     ssid.toCharArray(candidate.ssid, sizeof(candidate.ssid));
     configuration::WifiSecurity security;
     if (!parseSecurity(securityValue, security)) {
-        return configError("wifiSecurity", "invalid_security");
+        return sendFieldError("wifiSecurity", "invalid_security");
     }
     candidate.wifiSecurity = static_cast<uint8_t>(security);
 
@@ -564,13 +563,13 @@ void handleConfigPost() {
         security == configuration::WifiSecurity::Unset;
     if (!forget) {
         if (password.length() != 0) {
-            return configError("wifiPassword", "credential_change_not_allowed");
+            return sendFieldError("wifiPassword", "credential_change_not_allowed");
         }
         if (strcmp(current.ssid, candidate.ssid) != 0) {
-            return configError("ssid", "credential_change_not_allowed");
+            return sendFieldError("ssid", "credential_change_not_allowed");
         }
         if (current.wifiSecurity != candidate.wifiSecurity) {
-            return configError("wifiSecurity", "credential_change_not_allowed");
+            return sendFieldError("wifiSecurity", "credential_change_not_allowed");
         }
     }
 
@@ -587,7 +586,7 @@ void handleConfigPost() {
                 strncpy(candidate.wifiPassword, current.wifiPassword, sizeof(candidate.wifiPassword) - 1);
                 candidate.wifiPassword[sizeof(candidate.wifiPassword) - 1] = '\0';
             } else {
-                return configError("wifiPassword", "password_required");
+                return sendFieldError("wifiPassword", "password_required");
             }
         } else {
             password.toCharArray(candidate.wifiPassword, sizeof(candidate.wifiPassword));
@@ -596,48 +595,48 @@ void handleConfigPost() {
 
     configuration::TcpMode tcpMode;
     if (!configuration::tcpModeFromName(tcpModeValue.c_str(), tcpMode)) {
-        return configError("tcpMode", "invalid_mode");
+        return sendFieldError("tcpMode", "invalid_mode");
     }
     candidate.tcpMode = static_cast<uint8_t>(tcpMode);
     if (tcpRemoteHost.length() >= sizeof(candidate.tcpRemoteHost)) {
-        return configError("tcpRemoteHost", "too_long");
+        return sendFieldError("tcpRemoteHost", "too_long");
     }
     memset(candidate.tcpRemoteHost, 0, sizeof(candidate.tcpRemoteHost));
     tcpRemoteHost.toCharArray(candidate.tcpRemoteHost, sizeof(candidate.tcpRemoteHost));
 
     uint32_t listenPortNumber = 0;
     if (!parseUnsigned(tcpListenPort, listenPortNumber) || listenPortNumber > 65535) {
-        return configError("tcpListenPort", "invalid_port");
+        return sendFieldError("tcpListenPort", "invalid_port");
     }
     candidate.tcpListenPort = static_cast<uint16_t>(listenPortNumber);
 
     uint32_t remotePortNumber = 0;
     if (!parseUnsigned(tcpRemotePort, remotePortNumber) || remotePortNumber > 65535) {
-        return configError("tcpRemotePort", "invalid_port");
+        return sendFieldError("tcpRemotePort", "invalid_port");
     }
     candidate.tcpRemotePort = static_cast<uint16_t>(remotePortNumber);
 
     uint32_t baudNumber = 0;
-    if (!parseUnsigned(baud, baudNumber)) return configError("baud", "invalid_baud");
+    if (!parseUnsigned(baud, baudNumber)) return sendFieldError("baud", "invalid_baud");
     candidate.baud = baudNumber;
     configuration::Framing framingValue;
     if (!configuration::framingFromName(framing.c_str(), framingValue)) {
-        return configError("framing", "invalid_framing");
+        return sendFieldError("framing", "invalid_framing");
     }
     candidate.framing = static_cast<uint8_t>(framingValue);
     uint32_t longPressNumber = 0;
     if (!parseUnsigned(longPress, longPressNumber)) {
-        return configError("longPressMs", "invalid_timeout");
+        return sendFieldError("longPressMs", "invalid_timeout");
     }
     candidate.longPressMs = longPressNumber;
     uint32_t longPressRepeatNumber = 0;
     if (!parseUnsigned(longPressRepeat, longPressRepeatNumber)) {
-        return configError("longPressRepeatMs", "invalid_timeout");
+        return sendFieldError("longPressRepeatMs", "invalid_timeout");
     }
     candidate.longPressRepeatMs = longPressRepeatNumber;
     uint32_t screenSaverNumber = 0;
     if (!parseUnsigned(screenSaver, screenSaverNumber)) {
-        return configError("screenSaverSeconds", "invalid_timeout");
+        return sendFieldError("screenSaverSeconds", "invalid_timeout");
     }
     candidate.screenSaverSeconds = screenSaverNumber;
     const configuration::ValidationError validation = configuration::validationError(candidate);
@@ -692,7 +691,7 @@ void handleTrialPost() {
     }
     if (!server.hasArg("ssid") || !server.hasArg("wifiSecurity") ||
             !server.hasArg("wifiPassword")) {
-        return configError("configuration", "incomplete_request");
+        return sendFieldError("configuration", "incomplete_request");
     }
 
     const String ssid = server.arg("ssid");
@@ -700,19 +699,19 @@ void handleTrialPost() {
     configuration::WifiSecurity security;
     if (!parseSecurity(server.arg("wifiSecurity"), security) ||
             security == configuration::WifiSecurity::Unset) {
-        return configError("wifiSecurity", "invalid_security");
+        return sendFieldError("wifiSecurity", "invalid_security");
     }
-    if (ssid.length() == 0) return configError("ssid", "network_required");
-    if (ssid.length() > 32) return configError("ssid", "too_long");
+    if (ssid.length() == 0) return sendFieldError("ssid", "network_required");
+    if (ssid.length() > 32) return sendFieldError("ssid", "too_long");
     if (security == configuration::WifiSecurity::Open) {
         if (password.length() != 0) {
-            return configError("wifiPassword", "unexpected_password");
+            return sendFieldError("wifiPassword", "unexpected_password");
         }
     } else if (password.length() < kMinimumWifiPassword ||
             password.length() > kMaximumWifiPassword) {
-        return configError("wifiPassword", "invalid_length");
+        return sendFieldError("wifiPassword", "invalid_length");
     } else if (!printableAscii(password)) {
-        return configError("wifiPassword", "invalid_characters");
+        return sendFieldError("wifiPassword", "invalid_characters");
     }
 
     wifi_access::WifiCredentials candidate{};

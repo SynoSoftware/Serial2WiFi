@@ -264,34 +264,10 @@ void finishPendingSend(
     portEXIT_CRITICAL(&boundaryLock);
 }
 
-void addSerialToNetworkReceived(size_t amount) {
-    portENTER_CRITICAL(&countersLock);
-    serialToNetworkReceived += amount;
-    portEXIT_CRITICAL(&countersLock);
-}
-
-void addSerialToNetworkForwarded(size_t amount) {
-    portENTER_CRITICAL(&countersLock);
-    serialToNetworkForwarded += amount;
-    portEXIT_CRITICAL(&countersLock);
-}
-
-void addNetworkToSerialReceived(size_t amount) {
-    portENTER_CRITICAL(&countersLock);
-    networkToSerialReceived += amount;
-    portEXIT_CRITICAL(&countersLock);
-}
-
-void addNetworkToSerialForwarded(size_t amount) {
-    portENTER_CRITICAL(&countersLock);
-    networkToSerialForwarded += amount;
-    portEXIT_CRITICAL(&countersLock);
-}
-
-void addTerminalToSerialReceived(size_t amount) {
+void addCounter(uint64_t &counter, size_t amount) {
     if (amount == 0) return;
     portENTER_CRITICAL(&countersLock);
-    terminalToSerialReceived += amount;
+    counter += amount;
     portEXIT_CRITICAL(&countersLock);
 }
 
@@ -340,6 +316,14 @@ void networkTask(void *) {
     bool dnsRequested = false;
     uint32_t dnsRequestGeneration = 0;
 
+    // Client and listener share one configuration; neither may outlive it alone.
+    auto stopEndpoints = [&client, &listenerStarted, &listeningPort]() {
+        client.stop();
+        if (listenerStarted) tcpServer.stop();
+        listenerStarted = false;
+        listeningPort = 0;
+    };
+
     for (;;) {
         const uint32_t now = millis();
         const uint32_t workBoundaryGeneration = currentBoundaryGeneration();
@@ -350,20 +334,14 @@ void networkTask(void *) {
         }
 
         if (boundaryActive()) {
-            client.stop();
-            if (listenerStarted) tcpServer.stop();
-            listenerStarted = false;
-            listeningPort = 0;
+            stopEndpoints();
             dnsRequested = false;
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
 
         if (seenGeneration != currentGeneration()) {
-            client.stop();
-            if (listenerStarted) tcpServer.stop();
-            listenerStarted = false;
-            listeningPort = 0;
+            stopEndpoints();
             seenGeneration = currentGeneration();
             // Every configuration field this task reads changes only together
             // with a generation bump, so this is the only re-snapshot the
@@ -379,10 +357,7 @@ void networkTask(void *) {
         const bool configured = listenMode ?
             listenConfigured(config) : connectConfigured(config);
         if (!configured) {
-            client.stop();
-            if (listenerStarted) tcpServer.stop();
-            listenerStarted = false;
-            listeningPort = 0;
+            stopEndpoints();
             portENTER_CRITICAL(&boundaryLock);
             tcpConnectionWaitingForTerminalTx = false;
             portEXIT_CRITICAL(&boundaryLock);
@@ -393,20 +368,14 @@ void networkTask(void *) {
 
         if (listenMode) {
             if (!wifi_access::stationConnected()) {
-                client.stop();
-                if (listenerStarted) tcpServer.stop();
-                listenerStarted = false;
-                listeningPort = 0;
+                stopEndpoints();
                 setConnectionState(ConnectionState::WaitingForWifi);
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
 
             if (!listenerStarted || listeningPort != config.tcpListenPort) {
-                client.stop();
-                if (listenerStarted) tcpServer.stop();
-                listenerStarted = false;
-                listeningPort = 0;
+                stopEndpoints();
                 if (beginNetworkIo(workBoundaryGeneration, false)) {
                     tcpServer.begin(config.tcpListenPort);
                     if (tcpServer) {
@@ -449,12 +418,6 @@ void networkTask(void *) {
                 }
             }
         } else {
-            if (listenerStarted) {
-                tcpServer.stop();
-                listenerStarted = false;
-                listeningPort = 0;
-            }
-
             if (!wifi_access::stationConnected()) {
                 client.stop();
                 portENTER_CRITICAL(&boundaryLock);
@@ -568,7 +531,7 @@ void networkTask(void *) {
                 }
                 endNetworkIo();
             }
-            addSerialToNetworkForwarded(written);
+            addCounter(serialToNetworkForwarded, written);
             finishPendingSend(
                 serialToNetworkQueue,
                 pending,
@@ -585,7 +548,7 @@ void networkTask(void *) {
                 const int read = client.read(chunk, toRead);
                 if (read > 0) {
                     const size_t received = static_cast<size_t>(read);
-                    addNetworkToSerialReceived(received);
+                    addCounter(networkToSerialReceived, received);
                     queueNetworkToSerial(chunk, received, workBoundaryGeneration);
                 }
                 endNetworkIo();
@@ -631,7 +594,7 @@ void serialTxTask(void *) {
                 written = serial_port::writeBytes(pending, pendingLength);
                 endSerialIo();
             }
-            addNetworkToSerialForwarded(written);
+            addCounter(networkToSerialForwarded, written);
             browser_terminal::onSerialTraffic(
                 browser_terminal::Direction::ToSerial, pending, written);
             finishPendingSend(
@@ -660,7 +623,7 @@ void serialTxTask(void *) {
             // Boundary admission is closed, but these bytes were accepted
             // before it began and must finish through the sole UART TX path.
             written = serial_port::writeBytes(terminalPending, terminalPendingLength);
-            addTerminalToSerialReceived(written);
+            addCounter(terminalToSerialReceived, written);
             // Reported before the memmove, while terminalPending still holds
             // the bytes that went out.
             browser_terminal::onSerialTraffic(
@@ -699,7 +662,7 @@ void begin() {
 
 void serialBytesReceived(const uint8_t *data, size_t length) {
     if (data == nullptr || length == 0) return;
-    addSerialToNetworkReceived(length);
+    addCounter(serialToNetworkReceived, length);
     portENTER_CRITICAL(&boundaryLock);
     if (transportBoundaryActive) {
         transport_buffer::recordDropped(serialToNetworkQueue, length);
