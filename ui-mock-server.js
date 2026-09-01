@@ -4,7 +4,7 @@
 //
 // Drive scenarios from another terminal:
 //   curl -X POST -d "authenticated=false" http://127.0.0.1:4173/mock/state
-//   curl -X POST -d "passwordSet=false&terminalAvailable=true" http://127.0.0.1:4173/mock/state
+//   curl -X POST -d "passwordSet=false&fromSetupAp=true" http://127.0.0.1:4173/mock/state
 //
 // Save-outcome triggers (magic values, mirroring the firmware's responses):
 //   tcpListenPort=65535 -> 400 {"error":"invalid_port","field":"tcpListenPort"}
@@ -25,7 +25,7 @@ const dataRoot = path.join(__dirname, 'data');
 const state = {
     passwordSet: true,
     authenticated: false,
-    terminalAvailable: true,
+    fromSetupAp: true,
     authDown: false,
     configDown: false
 };
@@ -93,20 +93,27 @@ function frontendBuild() {
     }
 }
 
+// The order the firmware decides this in: nothing to run, then no station to
+// run it on, then the socket. Reporting a listener while Wi-Fi was
+// unconfigured put a combination on the page that no device can reach.
 function tcpState() {
-    if (config.tcpMode === 'listen') {
-        return Number(config.tcpListenPort) > 0 ? 'listening' : 'disabled';
+    const configured = config.tcpMode === 'listen'
+        ? Number(config.tcpListenPort) > 0
+        : Boolean(config.tcpRemoteHost) && Number(config.tcpRemotePort) > 0;
+    if (!configured) {
+        return 'disabled';
     }
-    return config.tcpRemoteHost && Number(config.tcpRemotePort) > 0
-        ? 'connected'
-        : 'disabled';
+    if (state.wifiOutcome !== 'connected' || !config.ssid) {
+        return 'waiting_for_wifi';
+    }
+    return config.tcpMode === 'listen' ? 'listening' : 'connected';
 }
 
 function status() {
     return {
         passwordSet: state.passwordSet,
         authenticated: state.authenticated,
-        terminalAvailable: state.terminalAvailable,
+        fromSetupAp: state.fromSetupAp,
         firmwareBuild,
         frontendBuild: frontendBuild(),
         wifiConfigured: Boolean(config.ssid),
@@ -114,6 +121,9 @@ function status() {
         wifiOutcome: config.ssid ? state.wifiOutcome : 'none',
         wifiApActive: true,
         setupSsid: 'S2W-B9',
+        setupClients: 1,
+        setupIp: '100.64.0.1',
+        stationSsid: config.ssid,
         stationIp: state.wifiOutcome === 'connected' && config.ssid ? '10.0.88.184' : '',
         // Derived from the saved record, like the firmware. Hardcoding these
         // made the runtime labels report a state no save could ever change.
@@ -160,7 +170,7 @@ http.createServer(async (request, response) => {
         return json(response, 200, {
             passwordSet: state.passwordSet,
             authenticated: state.authenticated,
-            terminalAvailable: state.terminalAvailable,
+            fromSetupAp: state.fromSetupAp,
             csrfToken: 'mock-auth-token'
         });
     }
@@ -179,7 +189,7 @@ http.createServer(async (request, response) => {
         if (!state.passwordSet) {
             // Firmware bootstrap branch: AP-only, no session required, and
             // creating the password does NOT sign the browser in.
-            if (!state.terminalAvailable) return json(response, 403, { error: 'bootstrap_requires_setup_ap' });
+            if (!state.fromSetupAp) return json(response, 403, { error: 'bootstrap_requires_setup_ap' });
             if (!form.get('newPassword')) return json(response, 400, { error: 'password_required', field: 'newPassword' });
             state.passwordSet = true;
             state.authenticated = false;
@@ -288,7 +298,7 @@ http.createServer(async (request, response) => {
             rssi: trial.rssi,
             ip: trial.outcome === 'connected' ? '10.0.88.184' : '',
             mdnsHost: 'serial2wifi-a1b4.local',
-            apActive: state.terminalAvailable
+            apActive: state.fromSetupAp
         });
     }
     if (url.pathname === '/api/wifi/scan') {

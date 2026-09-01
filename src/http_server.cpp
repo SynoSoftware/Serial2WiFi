@@ -317,7 +317,7 @@ void handleStatus() {
     body += ",\"passwordSet\":" + String(passwordSet ? "true" : "false");
     body += ",\"authenticated\":" + String(authenticated ? "true" : "false");
     body += ",\"authState\":\"" + String(authenticationState(authenticated)) + "\"";
-    body += ",\"terminalAvailable\":" + String(fromSetupAp() ? "true" : "false");
+    body += ",\"fromSetupAp\":" + String(fromSetupAp() ? "true" : "false");
     body += ",\"firmwareBuild\":\"" + String(build_number::kFirmware) + "\"";
     body += ",\"frontendBuild\":\"" + escaped(frontendBuildNumber) + "\"";
     body += ",\"wifiConfigured\":" + String(wifi.stationConfigured ? "true" : "false");
@@ -325,6 +325,9 @@ void handleStatus() {
     body += ",\"wifiOutcome\":\"" + String(outcomeName(wifi.stationOutcome)) + "\"";
     body += ",\"wifiApActive\":" + String(wifi.setupApActive ? "true" : "false");
     body += ",\"setupSsid\":\"" + escaped(wifi.setupSsid) + "\"";
+    body += ",\"setupClients\":" + String(wifi.setupClients);
+    body += ",\"setupIp\":\"" + escaped(ipString(wifi.setupIp)) + "\"";
+    body += ",\"stationSsid\":\"" + escaped(wifi.stationSsid) + "\"";
     body += ",\"stationIp\":\"" + escaped(ipString(wifi.stationIp)) + "\"";
     body += ",\"tcpState\":\"" + String(connectionName(transport.state)) + "\"";
     body += ",\"transportTaskError\":" + String(transport.taskStartError ? "true" : "false");
@@ -354,7 +357,7 @@ void handleAuthGet() {
         management_auth::passwordSet() ? "true" : "false");
     body += ",\"authenticated\":" + String(authenticated ? "true" : "false");
     body += ",\"authState\":\"" + String(authenticationState(authenticated)) + "\"";
-    body += ",\"terminalAvailable\":" + String(fromSetupAp() ? "true" : "false");
+    body += ",\"fromSetupAp\":" + String(fromSetupAp() ? "true" : "false");
     body += ",\"csrfToken\":\"" + String(csrfToken) + "\"}";
     sendJson(body);
 }
@@ -675,7 +678,11 @@ bool printableAscii(const String &value) {
 }
 
 void handleTrialPost() {
-    if (!requireConfigurationAccess()) return;
+    // Reaching this page over the LAN proves the saved network works. An
+    // attempt started from there moves the device off the link the request
+    // arrived on and can report the result nowhere, so like the scan it is
+    // offered only to someone on the setup AP, in range of the device.
+    if (!requireSetupAccess()) return;
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
     // One trial at a time. Two overlapping attempts on the same SSID cannot be
     // told apart by their events, so the verdict of one Connect press could
@@ -740,7 +747,7 @@ void handleTrialGet() {
 }
 
 void handleTrialDelete() {
-    if (!requireConfigurationAccess()) return;
+    if (!requireSetupAccess()) return;
     if (!csrfValid()) return sendJson("{\"error\":\"csrf\"}", 403);
     wifi_access::cancelTrial();
     sendJson("{\"ok\":true}");

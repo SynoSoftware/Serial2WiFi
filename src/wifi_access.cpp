@@ -39,6 +39,10 @@ constexpr uint32_t kTrialTimeoutMs = 60000;
 // its own disconnect or here, so one attempt can only ever give one verdict.
 constexpr uint32_t kTrialTeardownMs = 1000;
 constexpr uint8_t kSetupApChannel = 1;
+// The one place the setup AP address is decided. It is read back from the
+// driver while the AP is up and reported from here when it is down, because
+// the status page names the setup network whether it is running or not.
+const IPAddress kSetupApAddress(100, 64, 0, 1);
 // Keep these credentials compact. The OLED uses a fixed Version 2-L QR at
 // 2x scale; do not lengthen the SSID, password, or alphabet without first
 // recalculating the WIFI payload capacity and validating the physical layout.
@@ -218,11 +222,9 @@ void startAp() {
     // 169.254/16. The Arduino default AP address sits inside that test, so it
     // loses every Android client no matter what http_server answers. RFC 6598
     // Shared Address Space is outside the test and is reserved for equipment
-    // that must not occupy RFC1918. This call is the one place the setup AP
-    // address is decided; everything else reads it back from the driver.
-    // Never move this AP onto a private range.
-    const IPAddress apAddress(100, 64, 0, 1);
-    if (!WiFi.softAPConfig(apAddress, apAddress, IPAddress(255, 255, 255, 0)))
+    // that must not occupy RFC1918. Never move this AP onto a private range.
+    if (!WiFi.softAPConfig(
+            kSetupApAddress, kSetupApAddress, IPAddress(255, 255, 255, 0)))
         return;
     if (!WiFi.softAP(deviceName, devicePassword, kSetupApChannel, 0, 4))
         return;
@@ -664,7 +666,14 @@ Snapshot snapshot() {
     strncpy(result.stationSsid, stationSsid, sizeof(result.stationSsid) - 1);
     strncpy(result.setupSsid, deviceName, sizeof(result.setupSsid) - 1);
     strncpy(result.setupPassword, devicePassword, sizeof(result.setupPassword) - 1);
-    result.setupIp = WiFi.softAPIP();
+    // How many stations the driver actually holds. What each one is cannot be
+    // asked of it, and a browser naming itself is not the same question.
+    result.setupClients = WiFi.softAPgetStationNum();
+    // An AP that has shut itself down still has an address to come back on,
+    // and the status page names that network in both states. The OLED's setup
+    // pages exist only while the AP is up, where the driver answers anyway.
+    const IPAddress apIp = WiFi.softAPIP();
+    result.setupIp = apIp == IPAddress(0, 0, 0, 0) ? kSetupApAddress : apIp;
     result.stationIp = WiFi.localIP();
     return result;
 }

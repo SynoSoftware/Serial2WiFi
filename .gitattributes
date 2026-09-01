@@ -1,4 +1,7 @@
-* text=auto eol=lf
+# Git does not convert line endings. Each file is stored and checked out with
+# the bytes it already has.
+* -text
 
+# cmd.exe requires CRLF, so batch files stay normalized.
 *.bat text eol=crlf
 *.cmd text eol=crlf

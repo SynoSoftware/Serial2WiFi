@@ -244,3 +244,16 @@ Additionally:
 - Report exactly which checks ran and passed.
 - Mark hardware-dependent checks as pending and state the behavior they leave unproven.
 - Never weaken, suppress, or bypass a check merely to obtain a passing result.
+
+### Claims in a report
+
+A closing observation, warning, risk, or caveat must be proven and material before it is reported.
+
+- Proven: an attempt to refute it failed. A measurement, a failing case, or the line of code that causes it is proof. A prediction, a familiar pattern, or "this could" is not.
+- Material: it changes what the reader does next.
+
+A claim that fails either test is removed, not hedged. "May", "could", "in theory", and "worth checking" mark a claim that was never verified.
+
+Report a material claim that could not be verified as unverified, and state what was attempted. Do not report it as though it stands.
+
+An unverified caveat transfers the cost of disproving it to the reader. That cost has repeatedly exceeded the value of the observation.

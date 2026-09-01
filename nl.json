@@ -1,0 +1,353 @@
+{
+    "_comment": "The Dutch catalog. It answers exactly the keys en.json answers, with exactly the same placeholders, and tools/build_strings.py fails the build when it does not. Every rule en.json states applies here: sentence case, the familiar Windows command word, one term for one concept, and no message names the product. Microsoft Dutch terminology throughout, so a reader who knows Windows in Dutch already knows these words: Opslaan, Annuleren, Verbinden, Vergeten, Aanmelden, Afmelden, Gereed. Messages are written as Dutch sentences, never as English ones with Dutch words in them.",
+
+    "common": {
+        "save": "Opslaan",
+        "saving": "Opslaan…",
+        "cancel": "Annuleren",
+        "back": "Terug",
+        "done": "Gereed",
+        "retry": "Opnieuw",
+        "scan": "Scannen",
+        "add": "Toevoegen",
+        "change": "Wijzigen",
+        "forget": "Vergeten",
+        "connect": "Verbinden",
+        "create": "Maken",
+        "send": "Verzenden",
+        "clear": "Wissen",
+        "pause": "Pauzeren",
+        "resume": "Hervatten",
+        "notConfigured": "Niet geconfigureerd"
+    },
+
+    "app": {
+        "connectionLost": "Verbinding verbroken. Nieuwe poging…"
+    },
+
+    "boot": {
+        "connecting": "Verbinding maken…",
+        "unreachable": "Kan geen verbinding maken. Nieuwe poging…"
+    },
+
+    "theme": {
+        "switchToDark": "Overschakelen naar donker thema",
+        "switchToLight": "Overschakelen naar licht thema"
+    },
+
+    "language": {
+        "switch": "Overschakelen naar Engels"
+    },
+
+    "nav": {
+        "setup": "Instellingen",
+        "status": "Status",
+        "terminal": "Terminal"
+    },
+
+    "auth": {
+        "signIn": {
+            "command": "Aanmelden",
+            "title": "Aanmelden",
+            "closeLabel": "Aanmeldvenster sluiten",
+            "passwordRequired": "Voer het beheerderswachtwoord in.",
+            "failed": "Aanmelden mislukt.",
+            "incomplete": "Aanmelden is niet voltooid.",
+            "announced": "Aangemeld."
+        },
+        "signOut": {
+            "command": "Afmelden",
+            "title": "Afmelden en niet-opgeslagen wijzigingen verwerpen?",
+            "failed": "Afmelden mislukt.",
+            "announced": "Afgemeld."
+        },
+        "unavailable": {
+            "title": "Aanmelden niet beschikbaar",
+            "text": "Automatisch opnieuw proberen."
+        },
+        "bootstrap": {
+            "title": "Beheerderswachtwoord instellen",
+            "passwordRequired": "Voer een beheerderswachtwoord in.",
+            "mismatch": "De wachtwoorden komen niet overeen.",
+            "failed": "Kan het beheerderswachtwoord niet maken.",
+            "announced": "Beheerderswachtwoord gemaakt."
+        },
+        "notConfigured": {
+            "title": "Beheerderswachtwoord niet ingesteld",
+            "text": "Verbind met het installatienetwerk om een wachtwoord te maken."
+        },
+        "sessionEnded": {
+            "title": "Je sessie is beëindigd",
+            "text": "Je invoer is bewaard."
+        }
+    },
+
+    "security": {
+        "title": "Beveiliging",
+        "password": {
+            "label": "Beheerderswachtwoord",
+            "state": "Ingesteld",
+            "changeLabel": "Beheerderswachtwoord wijzigen",
+            "changeTitle": "Beheerderswachtwoord wijzigen",
+            "changeNotice": "Na het wijzigen wordt deze browser afgemeld.",
+            "currentLabel": "Huidig wachtwoord",
+            "newLabel": "Nieuw wachtwoord",
+            "confirmLabel": "Wachtwoord bevestigen",
+            "showLabel": "Beheerderswachtwoord tonen",
+            "showCurrentLabel": "Huidig wachtwoord tonen",
+            "showNewLabel": "Nieuw wachtwoord tonen",
+            "showConfirmLabel": "Bevestigd wachtwoord tonen",
+            "currentRequired": "Voer het huidige wachtwoord in.",
+            "newRequired": "Voer een nieuw wachtwoord in.",
+            "mismatch": "De nieuwe wachtwoorden komen niet overeen.",
+            "failed": "Kan het beheerderswachtwoord niet wijzigen.",
+            "changedTitle": "Wachtwoord gewijzigd",
+            "changedAnnounced": "Beheerderswachtwoord gewijzigd. Meld je opnieuw aan."
+        }
+    },
+
+    "wifi": {
+        "title": "Wi-Fi",
+        "network": {
+            "label": "Netwerk",
+            "none": "Geen netwerk opgeslagen.",
+            "changeLabel": "Netwerk wijzigen",
+            "addLabel": "Netwerk op naam toevoegen",
+            "scanLabel": "Naar netwerken scannen",
+            "fallback": "het netwerk"
+        },
+        "password": {
+            "label": "Wachtwoord",
+            "saved": "Opgeslagen",
+            "notSet": "Niet ingesteld",
+            "changeLabel": "Wi-Fi-wachtwoord wijzigen",
+            "showLabel": "Wi-Fi-wachtwoord tonen",
+            "length": "Een Wi-Fi-wachtwoord heeft 8 tot 63 tekens.",
+            "characters": "Verwijder het regeleinde of de tab. Een Wi-Fi-wachtwoord bevat alleen gewone toetsenbordtekens."
+        },
+        "editor": {
+            "networkHeading": "Netwerk",
+            "ssidLabel": "Netwerknaam",
+            "ssidRequired": "Voer de netwerknaam in.",
+            "securityLabel": "Beveiliging",
+            "securitySecured": "Beveiligd",
+            "securityOpen": "Open"
+        },
+        "chooser": {
+            "title": "Netwerk kiezen",
+            "listLabel": "Beschikbare Wi-Fi-netwerken",
+            "hidden": "Verborgen netwerk",
+            "hiddenAction": "Naam invoeren",
+            "rowSecured": "{network}, {signal} signaal, beveiligd",
+            "rowOpen": "{network}, {signal} signaal, open"
+        },
+        "signal": {
+            "strong": "Sterk",
+            "good": "Goed",
+            "fair": "Redelijk",
+            "weak": "Zwak"
+        },
+        "scan": {
+            "scanning": "Scannen…",
+            "failed": "Scannen mislukt.",
+            "none": "Geen netwerken gevonden.",
+            "foundOne": "1 netwerk gevonden.",
+            "foundMany": "{count} netwerken gevonden."
+        },
+        "trial": {
+            "connecting": "Verbinden met {network}",
+            "elapsed": "{seconds}s — dit kan tot een minuut duren.",
+            "announced": "Verbinden met {network}.",
+            "connected": "Verbonden met {network}",
+            "connectedAnnounced": "Verbonden met {network}.",
+                "startFailed": "Kan de poging niet starten.",
+            "authFailed": "Verificatie bij {network} is mislukt. Controleer het wachtwoord.",
+            "authFailedWeakSignal": "Verificatie bij {network} is mislukt. Controleer het wachtwoord. Het signaal is hier ook zwak ({rssi} dBm), wat dit kan veroorzaken.",
+            "securityMismatch": "Kan geen verbinding maken met {network}. Het beveiligingstype wordt niet ondersteund.",
+            "notFound": "{network} is buiten bereik of zendt niet uit.",
+            "couldNotSave": "Verbonden met {network}, maar opslaan is mislukt.",
+            "couldNotConnect": "Kan geen verbinding maken met {network}. Controleer de router."
+        },
+        "handoff": {
+            "address": "Bereikbaar op http://{address} via je netwerk ({network}).",
+            "nextNamed": "Je leest dit via het installatienetwerk ({setup}), dat ongeveer 10 minuten na het verbinden uitgaat.",
+            "nextUnnamed": "Je leest dit via het installatienetwerk, dat ongeveer 10 minuten na het verbinden uitgaat."
+        },
+        "forget": {
+            "title": "Dit netwerk vergeten?",
+            "detail": "Vergeten verwijdert {network} en een eventueel opgeslagen wachtwoord. Deze pagina blijft bereikbaar op het installatienetwerk.",
+            "working": "Vergeten…",
+            "failed": "Kan het netwerk niet vergeten.",
+            "done": "Netwerk vergeten."
+        }
+    },
+
+    "tcp": {
+        "title": "TCP",
+        "modeLabel": "Modus",
+        "modeListen": "Luisteren",
+        "modeConnect": "Verbinden",
+        "listenPortLabel": "Luisterpoort",
+        "serverLabel": "Server",
+        "portLabel": "Poort",
+        "runtime": {
+            "unavailable": "Nu · TCP niet beschikbaar",
+            "notConfigured": "Nu · Niet geconfigureerd",
+            "waitingForWifi": "Nu · Wachten op Wi-Fi",
+            "listening": "Nu · Wacht op client · poort {port}",
+            "connecting": "Nu · Verbinden met {endpoint}…",
+            "retrying": "Nu · {endpoint} niet bereikbaar · nieuwe poging",
+            "clientConnected": "Nu · TCP-client verbonden",
+            "connected": "Nu · Verbonden met {endpoint}",
+            "failure": "Nu · TCP-fout"
+        },
+        "state": {
+            "disabled": "Uitgeschakeld",
+            "waitingForWifi": "Wachten op Wi-Fi",
+            "listening": "Wacht op client",
+            "connecting": "Verbinden",
+            "retrying": "Nieuwe poging",
+            "clientConnected": "Client verbonden",
+            "connected": "Verbonden",
+            "failure": "Fout",
+            "unknown": "Onbekende status"
+        }
+    },
+
+    "serial": {
+        "title": "Serieel",
+        "baudLabel": "Baud",
+        "framingLabel": "Frame"
+    },
+
+    "device": {
+        "title": "Apparaat",
+        "buttonTitle": "PRG-knop",
+        "longPressLabel": "Lang indrukken",
+        "repeatLabel": "Herhalen bij ingedrukt houden",
+        "screenSaverTitle": "Schermbeveiliging",
+        "screenSaverLabel": "Scherm uitzetten na",
+        "screenSaverHelp": "Laat leeg om het scherm altijd aan te laten."
+    },
+
+    "setup": {
+        "loading": "Instellingen laden…",
+        "unavailableTitle": "Instellingen niet beschikbaar"
+    },
+
+    "bridge": {
+        "needsWifiAndTcp": "Stel Wi-Fi en TCP in.",
+        "needsWifi": "Stel Wi-Fi in.",
+        "needsListenPort": "Stel een luisterpoort in.",
+        "needsServer": "Stel een server en poort in.",
+        "wifiConnectingTcpWaiting": "TCP wacht op Wi-Fi.",
+        "tcpUnavailableTitle": "TCP niet beschikbaar",
+        "waitingForWifiTitle": "Wachten op Wi-Fi",
+        "readyTitle": "Gereed",
+        "ready": "Wacht op een TCP-client op poort {port}.",
+        "connectingTitle": "Verbinden",
+        "connecting": "Verbinden met {endpoint}.",
+        "retryingTitle": "Nieuwe poging",
+        "retrying": "Kan {endpoint} niet bereiken.",
+        "activeTitle": "Actief",
+        "activeListen": "Er is een TCP-client verbonden.",
+        "activeConnect": "Verbonden met {endpoint}.",
+        "failureTitle": "TCP-fout",
+        "failureListen": "De luisterpoort kon niet worden geopend.",
+        "failureConnect": "Kan geen verbinding maken met {endpoint}.",
+        "portLabel": "poort {port}",
+        "portNotSet": "poort niet ingesteld",
+        "endpointNotSet": "eindpunt niet ingesteld",
+        "roleStation": "Station",
+        "roleAccessPoint": "Toegangspunt",
+        "serialEquipment": "Seriële apparatuur",
+        "noStationAddress": "Geen wifi-adres",
+        "noDevicesConnected": "Geen apparaten verbonden",
+        "deviceConnected": "{count} apparaat verbonden",
+        "devicesConnected": "{count} apparaten verbonden",
+        "noneConnected": "Niets verbonden",
+        "countConnected": "{count} verbonden",
+        "tcpClient": "TCP-client",
+        "tcpServer": "TCP-server",
+        "unknownTitle": "Onbekend",
+        "stale": "De laatste meting kan verouderd zijn."
+    },
+
+    "status": {
+        "setupApOn": "Aan",
+        "setupApOff": "Uit",
+        "trafficTitle": "Verkeer",
+        "serialToTcpLabel": "Serieel → TCP",
+        "tcpToSerialLabel": "TCP → serieel",
+        "droppedLabel": "Verloren",
+        "dropped": "S→T {serialToTcp} · T→S {tcpToSerial}",
+        "buildTitle": "Build",
+        "firmwareLabel": "Firmware",
+        "frontendLabel": "Frontend",
+        "wifi": {
+            "authFailedTitle": "Verificatie mislukt",
+            "authFailedNamed": "Verbind met installatienetwerk {setup} en maak opnieuw verbinding met het huidige wachtwoord.",
+            "authFailedUnnamed": "Verbind met het installatienetwerk op het scherm en maak opnieuw verbinding met het huidige wachtwoord.",
+            "notFoundTitle": "Netwerk niet gevonden",
+            "notFound": "Het opgeslagen netwerk is buiten bereik of zendt niet uit. Het zoeken gaat door.",
+            "securityMismatchTitle": "Beveiliging niet ondersteund",
+            "securityMismatch": "Kies een ander netwerk.",
+            "notConnectedTitle": "Niet verbonden",
+            "notConnected": "De pogingen gaan door.",
+            "connectingTitle": "Verbinden"
+        }
+    },
+
+    "terminal": {
+        "toolbarLabel": "Terminalknoppen",
+        "viewLabel": "Weergave",
+        "viewAriaLabel": "Terminalweergave",
+        "viewText": "Tekst",
+        "viewHex": "Hex",
+        "enterLabel": "Enter",
+        "enterAriaLabel": "Bytes die Enter verstuurt",
+        "showSent": "Verzonden tonen",
+        "outputLabel": "Uitvoer van seriële terminal",
+        "sendLabel": "Tekst om naar de seriële poort te sturen",
+        "serialSettings": "{baud} baud · {framing}",
+        "counters": "RX {received} · TX {sent}",
+        "connecting": "Verbinden…",
+        "connected": "Verbonden",
+        "disconnected": "Verbinding verbroken",
+        "retrying": "Nieuwe poging",
+        "retryingIn": "Nieuwe poging over {seconds}s",
+        "waiting": "Wachten op seriële gegevens…",
+        "readOnlyHint": "Alleen-lezen zolang TCP verbonden is.",
+        "typingHint": "Typ om te verzenden. Tab verplaatst de focus. Pauzeren stopt alleen de weergave.",
+        "sendLimit": "Je kunt maximaal {bytes} bytes tegelijk verzenden."
+    },
+
+    "errors": {
+        "invalidPassword": "Onjuist beheerderswachtwoord.",
+        "incorrectPassword": "Het huidige wachtwoord is onjuist.",
+        "tooManyAttempts": "Te veel pogingen. Wacht even.",
+        "authenticationRequired": "Je sessie is beëindigd. Meld je opnieuw aan.",
+        "passwordRequired": "Voer een wachtwoord in.",
+        "passwordAlreadySet": "Er bestaat al een beheerderswachtwoord. Meld je aan.",
+        "passwordSaveFailed": "Kan het wachtwoord niet opslaan.",
+        "notAllowedHere": "Deze pagina is op het verkeerde adres geopend. Open de pagina op het adres dat op het scherm staat.",
+        "portRange": "Voer een poort van 0 tot 65535 in.",
+        "remotePortRequired": "Voer een poort van 1 tot 65535 in.",
+        "serverRequired": "Voer de servernaam of het adres in.",
+        "correctListenSettings": "Kies Luisteren om de opgeslagen poort te corrigeren.",
+        "correctConnectSettings": "Kies Verbinden om de opgeslagen server en poort te corrigeren.",
+        "range": "Voer een getal van {min} tot {max} in.",
+        "screenSaverRange": "Voer 5 seconden of meer in.",
+        "pageOutOfDate": "Deze pagina is verouderd. Vernieuw de pagina.",
+        "invalidTimeout": "Voer een waarde binnen het toegestane bereik in.",
+        "valueRejected": "Deze waarde kan niet worden gebruikt.",
+        "settingsInvalid": "Deze instellingen kunnen niet worden gebruikt.",
+        "saveFailed": "Kan de instellingen niet opslaan."
+    },
+
+    "save": {
+        "done": "Wijzigingen opgeslagen.",
+        "serialNotApplied": "Instellingen opgeslagen. De seriële instellingen konden niet worden toegepast.",
+        "unconfirmed": "Kan niet bevestigen of de instellingen zijn opgeslagen. Je invoer is bewaard."
+    }
+}

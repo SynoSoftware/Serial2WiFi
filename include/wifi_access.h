@@ -55,6 +55,7 @@ struct Snapshot {
     char stationSsid[33];
     char setupSsid[33];
     char setupPassword[17];
+    uint8_t setupClients;
     IPAddress setupIp;
     IPAddress stationIp;
 };

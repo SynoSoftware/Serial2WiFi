@@ -31,6 +31,14 @@
                 <circle cx="17" cy="17" r="3" />
                 <circle cx="7" cy="7" r="3" />
             </symbol>
+            <symbol id="icon-languages" viewBox="0 0 24 24">
+                <path d="m5 8 6 6" />
+                <path d="m4 14 6-6 2-3" />
+                <path d="M2 5h12" />
+                <path d="M7 2h1" />
+                <path d="m22 22-5-10-5 10" />
+                <path d="M14 18h6" />
+            </symbol>
             <symbol id="icon-log-in" viewBox="0 0 24 24">
                 <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
                 <path d="m10 17 5-5-5-5" />
@@ -148,6 +156,49 @@
                 <path d="M2.2 7.2 5.1 8" />
                 <path d="M14 4.1 12 6" />
             </symbol>
+            <symbol id="icon-cpu" viewBox="0 0 24 24">
+                <rect width="16" height="16" x="4" y="4" rx="2" />
+                <rect width="6" height="6" x="9" y="9" rx="1" />
+                <path d="M15 2v2" />
+                <path d="M15 20v2" />
+                <path d="M2 15h2" />
+                <path d="M2 9h2" />
+                <path d="M20 15h2" />
+                <path d="M20 9h2" />
+                <path d="M9 2v2" />
+                <path d="M9 20v2" />
+            </symbol>
+            <symbol id="icon-laptop" viewBox="0 0 24 24">
+                <path
+                    d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"
+                />
+                <path d="M20.054 15.987H3.946" />
+            </symbol>
+            <symbol id="icon-radio-tower" viewBox="0 0 24 24">
+                <path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9" />
+                <path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5" />
+                <circle cx="12" cy="9" r="2" />
+                <path d="M16.2 4.8c2 2 2.26 5.11.8 7.47" />
+                <path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.2" />
+                <path d="M9.5 18h5" />
+                <path d="m8 22 4-11 4 11" />
+            </symbol>
+            <symbol id="icon-router" viewBox="0 0 24 24">
+                <rect width="20" height="8" x="2" y="14" rx="2" />
+                <path d="M6.01 18H6" />
+                <path d="M10.01 18H10" />
+                <path d="M15 10v4" />
+                <path d="M17.84 7.17a4 4 0 0 0-5.66 0" />
+                <path d="M20.66 4.34a8 8 0 0 0-11.31 0" />
+            </symbol>
+            <symbol id="icon-monitor-smartphone" viewBox="0 0 24 24">
+                <path
+                    d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h8"
+                />
+                <path d="M10 19v-3.96 3.15" />
+                <path d="M7 19h5" />
+                <rect width="6" height="10" x="16" y="12" rx="2" />
+            </symbol>
             <symbol id="icon-monitor" viewBox="0 0 24 24">
                 <rect width="20" height="14" x="2" y="3" rx="2" />
                 <line x1="8" x2="16" y1="21" y2="21" />
@@ -252,23 +303,31 @@
                         <h1 class="product-name">Serial2WiFi</h1>
                         <span class="brand-name">synapse.sr</span>
                     </div>
-                    <span id="deviceName" class="device-name"></span>
                 </div>
                 <div class="brand-actions">
                     <button
                         id="themeToggle"
                         class="icon-button brand-action"
                         type="button"
-                        data-i18n-label="theme.toggle"
                     >
                         <svg class="icon" aria-hidden="true">
                             <use id="themeIcon" href="#icon-moon"></use>
                         </svg>
                     </button>
                     <button
+                        id="languageToggle"
+                        class="icon-button brand-action"
+                        type="button"
+                    >
+                        <svg class="icon" aria-hidden="true">
+                            <use href="#icon-languages"></use>
+                        </svg>
+                    </button>
+                    <button
                         id="loginButton"
                         class="secondary-button icon-text brand-action"
                         type="button"
+                        data-i18n-label="auth.signIn.command"
                         hidden
                     >
                         <svg class="icon" aria-hidden="true">
@@ -279,6 +338,7 @@
                         id="logoutButton"
                         class="secondary-button icon-text brand-action"
                         type="button"
+                        data-i18n-label="auth.signOut.command"
                         hidden
                     >
                         <svg class="icon" aria-hidden="true">
@@ -291,31 +351,31 @@
             <div id="navigation" class="navigation" hidden>
                 <nav class="tabs" role="tablist" aria-label="Serial2WiFi">
                     <button
-                        id="setupTab"
-                        class="tab"
-                        type="button"
-                        role="tab"
-                        aria-selected="true"
-                        aria-controls="setupView"
-                        data-view="setupView"
-                    >
-                        <svg class="icon tab-icon" aria-hidden="true">
-                            <use href="#icon-settings-2"></use></svg
-                        ><span data-i18n="nav.setup"></span>
-                    </button>
-                    <button
                         id="statusTab"
                         class="tab"
                         type="button"
                         role="tab"
-                        aria-selected="false"
+                        aria-selected="true"
                         aria-controls="statusView"
                         data-view="statusView"
-                        tabindex="-1"
                     >
                         <svg class="icon tab-icon" aria-hidden="true">
                             <use href="#icon-activity"></use></svg
                         ><span data-i18n="nav.status"></span>
+                    </button>
+                    <button
+                        id="setupTab"
+                        class="tab"
+                        type="button"
+                        role="tab"
+                        aria-selected="false"
+                        aria-controls="setupView"
+                        data-view="setupView"
+                        tabindex="-1"
+                    >
+                        <svg class="icon tab-icon" aria-hidden="true">
+                            <use href="#icon-settings-2"></use></svg
+                        ><span data-i18n="nav.setup"></span>
                     </button>
                     <button
                         id="terminalTab"
@@ -338,15 +398,15 @@
                 <svg class="icon" aria-hidden="true">
                     <use href="#icon-triangle-alert"></use>
                 </svg>
-                <span id="globalNoticeText" data-i18n="app.connectionLost"></span>
+                <span id="globalNoticeText"></span>
             </div>
             <p id="announcements" class="sr-only" aria-live="polite"></p>
 
             <section id="bootView" class="boot-view" aria-live="polite">
                 <svg class="icon spin" aria-hidden="true">
-                    <use href="#icon-loader-circle"></use>
+                    <use id="bootIcon" href="#icon-loader-circle"></use>
                 </svg>
-                <span data-i18n="boot.connecting"></span>
+                <span id="bootText" data-i18n="boot.connecting"></span>
             </section>
 
             <section
@@ -523,7 +583,7 @@
                                 <div id="wifiTrial" class="wifi-editor" hidden>
                                     <div class="editor-heading">
                                         <div class="editor-title">
-                                            <strong id="trialTitle" data-i18n="wifi.trial.title"></strong>
+                                            <strong id="trialTitle"></strong>
                                             <span id="trialDetail"></span>
                                         </div>
                                     </div>
@@ -601,7 +661,7 @@
                                 >
                                     <div class="editor-heading">
                                         <div class="editor-title">
-                                            <strong id="wifiCredentialsName" data-i18n="wifi.editor.networkHeading"></strong>
+                                            <strong id="wifiCredentialsName"></strong>
                                         </div>
                                     </div>
                                 </div>
@@ -680,16 +740,7 @@
                                     ></p>
                                 </div>
 
-                                <p
-                                    id="lanTrialNotice"
-                                    class="field-help"
-                                    hidden
-                                ></p>
-
-                                <div
-                                    id="wifiEditorActions"
-                                    class="editor-footer"
-                                >
+                                <div class="editor-footer">
                                     <button
                                         id="backToNetworks"
                                         class="secondary-button icon-text"
@@ -997,7 +1048,6 @@
                                                 min="0"
                                                 step="1"
                                                 inputmode="numeric"
-                                                data-i18n-placeholder="device.screenSaverOff"
                                                 aria-describedby="screenSaverHelp screenSaverSecondsError"
                                             /><span>sec</span>
                                         </div>
@@ -1036,7 +1086,7 @@
                             >
                                 <svg class="icon" aria-hidden="true">
                                     <use href="#icon-save"></use></svg
-                                ><span id="saveText" data-i18n="common.save"></span>
+                                ><span id="saveText"></span>
                             </button>
                         </div>
                     </form>
@@ -1052,7 +1102,7 @@
                                 <use href="#icon-shield-check"></use></svg
                             ><span data-i18n="security.title"></span>
                         </h2>
-                        <div id="securitySummary" class="security-row">
+                        <div class="security-row">
                             <div>
                                 <span class="setting-label" data-i18n="security.password.label"></span>
                                 <strong data-i18n="security.password.state"></strong>
@@ -1078,15 +1128,102 @@
                 <div class="view-content">
                     <section
                         class="bridge-summary"
-                        aria-labelledby="bridgeTitle"
                     >
-                        <h2 id="bridgeTitle" class="section-title">
-                            <svg class="icon section-icon" aria-hidden="true">
-                                <use href="#icon-activity"></use></svg
-                            ><span data-i18n="bridge.title"></span>
-                        </h2>
-                        <p class="bridge-status">
-                            <span id="bridgeState" class="bridge-state" data-state="neutral"></span><span id="bridgeDetail" class="bridge-detail"></span>
+                        <div id="bridgePath" class="bridge-path">
+                            <div class="bridge-node bridge-equipment">
+                                <svg class="icon bridge-node-icon" aria-hidden="true">
+                                    <use href="#icon-cpu"></use></svg
+                                ><span class="bridge-node-label" data-i18n="bridge.serialEquipment"></span>
+                            </div>
+                            <span class="bridge-connector bridge-c-equipment" aria-hidden="true"></span>
+                            <div class="bridge-wire bridge-serial-wire">
+                                <span class="bridge-wire-name">
+                                    <svg class="icon bridge-wire-icon" aria-hidden="true">
+                                        <use href="#icon-cable"></use></svg
+                                    ><span data-i18n="serial.title"></span>
+                                </span>
+                                <span id="bridgeSerialValues"></span>
+                            </div>
+                            <span class="bridge-connector bridge-c-serial" aria-hidden="true"></span>
+                            <div class="bridge-node bridge-hub">
+                                <svg class="icon bridge-node-icon" aria-hidden="true">
+                                    <use href="#icon-router"></use></svg
+                                ><span class="bridge-node-label">Serial2WiFi</span>
+                                <span id="bridgeHubAddress" class="bridge-node-address"></span>
+                            </div>
+                            <span class="bridge-connector bridge-c-tcp" aria-hidden="true"></span>
+                            <div id="bridgeTcpWire" class="bridge-wire bridge-tcp-wire">
+                                <span class="bridge-wire-name">
+                                    <svg class="icon bridge-wire-icon" aria-hidden="true">
+                                        <use href="#icon-wifi"></use></svg
+                                    ><span class="bridge-wire-role" data-i18n="bridge.roleStation"></span
+                                    ><span class="bridge-wire-separator" aria-hidden="true">·</span
+                                    ><span id="bridgeTcpName" class="bridge-wire-value"></span>
+                                </span>
+                                <span class="bridge-wire-values">
+                                    <span class="bridge-wire-endpoint"
+                                        ><span id="bridgeTcpValues" class="bridge-wire-value"></span
+                                        ><span id="bridgeTcpPort" class="bridge-wire-port"></span
+                                    ></span>
+                                </span>
+                                <span
+                                    id="bridgeTcpState"
+                                    class="bridge-wire-state"
+                                    data-state="neutral"
+                                    ><span class="bridge-dot" aria-hidden="true"></span
+                                    ><span id="bridgeTcpStateText"></span
+                                ></span>
+                            </div>
+                            <span class="bridge-connector bridge-c-peer" aria-hidden="true"></span>
+                            <div class="bridge-node bridge-peer">
+                                <svg class="icon bridge-node-icon" aria-hidden="true">
+                                    <use id="bridgePeerIcon" href="#icon-laptop"></use></svg
+                                ><span id="bridgePeerLabel" class="bridge-node-label"></span>
+                            </div>
+                            <div class="bridge-fork" aria-hidden="true">
+                                <span class="bridge-fork-stem"></span>
+                                <span class="bridge-fork-rail"></span>
+                            </div>
+                            <span class="bridge-connector bridge-c-setup" aria-hidden="true"></span>
+                            <div class="bridge-wire bridge-setup-wire">
+                                <span class="bridge-wire-name">
+                                    <svg class="icon bridge-wire-icon" aria-hidden="true">
+                                        <use href="#icon-radio-tower"></use></svg
+                                    ><span class="bridge-wire-role" data-i18n="bridge.roleAccessPoint"></span
+                                    ><span class="bridge-wire-separator" aria-hidden="true">·</span
+                                    ><span id="bridgeSetupName" class="bridge-wire-value"></span>
+                                </span>
+                                <span id="bridgeSetupValues"></span>
+                                <span
+                                    id="bridgeSetupState"
+                                    class="bridge-wire-state"
+                                    data-state="neutral"
+                                    ><span class="bridge-dot" aria-hidden="true"></span
+                                    ><span id="bridgeSetupStateText"></span
+                                ></span>
+                            </div>
+                            <span
+                                id="bridgeClientsLink"
+                                class="bridge-connector bridge-c-clients"
+                                aria-hidden="true"
+                            ></span>
+                            <div id="bridgeClients" class="bridge-node bridge-clients">
+                                <svg class="icon bridge-node-icon" aria-hidden="true">
+                                    <use href="#icon-monitor-smartphone"></use></svg
+                                ><span class="bridge-node-label" aria-hidden="true"
+                                    ><span id="bridgeClientsLabel" class="bridge-count-full"></span
+                                    ><span id="bridgeClientsShort" class="bridge-count-short"></span></span
+                                ><span id="bridgeClientsName" class="sr-only"></span>
+                            </div>
+                        </div>
+                        <p id="bridgeStatus" class="bridge-status">
+                            <span id="bridgeState" class="bridge-state" data-state="neutral"></span><span id="bridgeDetail" class="bridge-detail"></span
+                            ><button
+                                id="bridgeAction"
+                                class="bridge-action"
+                                type="button"
+                                hidden
+                            ></button>
                         </p>
                     </section>
 
@@ -1095,86 +1232,6 @@
                         class="status-layout"
                         data-stale="false"
                     >
-                        <section
-                            class="status-group"
-                            aria-labelledby="networkStatusTitle"
-                        >
-                            <h2 id="networkStatusTitle" class="section-title">
-                                <svg
-                                    class="icon section-icon"
-                                    aria-hidden="true"
-                                >
-                                    <use href="#icon-network"></use></svg
-                                ><span data-i18n="status.networkTitle"></span>
-                            </h2>
-                            <dl class="status-list">
-                                <div>
-                                    <dt data-i18n="status.wifiLabel"></dt>
-                                    <dd id="statusWifi"></dd>
-                                </div>
-                                <div>
-                                    <dt data-i18n="status.ipLabel"></dt>
-                                    <dd id="stationIp">-</dd>
-                                </div>
-                                <div>
-                                    <dt data-i18n="status.setupApLabel"></dt>
-                                    <dd id="configurationApState">-</dd>
-                                </div>
-                            </dl>
-                        </section>
-
-                        <section
-                            class="status-group"
-                            aria-labelledby="tcpStatusTitle"
-                        >
-                            <h2 id="tcpStatusTitle" class="section-title">
-                                <svg
-                                    class="icon section-icon"
-                                    aria-hidden="true"
-                                >
-                                    <use href="#icon-server"></use></svg
-                                ><span data-i18n="tcp.title"></span>
-                            </h2>
-                            <dl class="status-list">
-                                <div>
-                                    <dt data-i18n="status.tcpModeLabel"></dt>
-                                    <dd id="statusTcpMode">-</dd>
-                                </div>
-                                <div>
-                                    <dt data-i18n="status.tcpStateLabel"></dt>
-                                    <dd id="statusTcpState">-</dd>
-                                </div>
-                                <div>
-                                    <dt id="statusTcpEndpointLabel" data-i18n="status.tcpEndpointLabel"></dt>
-                                    <dd id="statusTcpEndpoint">-</dd>
-                                </div>
-                            </dl>
-                        </section>
-
-                        <section
-                            class="status-group"
-                            aria-labelledby="serialStatusTitle"
-                        >
-                            <h2 id="serialStatusTitle" class="section-title">
-                                <svg
-                                    class="icon section-icon"
-                                    aria-hidden="true"
-                                >
-                                    <use href="#icon-cable"></use></svg
-                                ><span data-i18n="serial.title"></span>
-                            </h2>
-                            <dl class="status-list">
-                                <div>
-                                    <dt data-i18n="serial.baudLabel"></dt>
-                                    <dd id="statusBaud">-</dd>
-                                </div>
-                                <div>
-                                    <dt data-i18n="serial.framingLabel"></dt>
-                                    <dd id="statusFraming">-</dd>
-                                </div>
-                            </dl>
-                        </section>
-
                         <section
                             class="status-group"
                             aria-labelledby="trafficStatusTitle"
@@ -1314,7 +1371,7 @@
                                                     id="terminalPauseIcon"
                                                     href="#icon-pause"
                                                 ></use></svg
-                                            ><span id="terminalPauseText" data-i18n="common.pause"></span>
+                                            ><span id="terminalPauseText"></span>
                                         </button>
                                         <button
                                             id="terminalClear"

@@ -1,10 +1,14 @@
 (() => {
     const $ = (id) => document.getElementById(id);
 
-    // en.json is the one maintained source for user-facing text. strings.js is
-    // generated from it and loaded before this file, so the catalog costs no
-    // request of its own.
-    const catalog = window.strings || {};
+    // en.json and nl.json are the maintained sources for user-facing text.
+    // strings.js is generated from both and loaded before this file, so the
+    // catalogs cost no request of their own and changing language fetches
+    // nothing.
+    const catalogs = window.strings || {};
+    const locales = ['en', 'nl'];
+    let locale = 'en';
+    let catalog = catalogs.en || {};
 
     // A key the catalog cannot answer is a build fault, and tools/build_strings.py
     // fails the build on one. This only has to keep such a page reading as
@@ -23,8 +27,20 @@
             (placeholder, name) => (name in values ? String(values[name]) : ''));
     }
 
-    // Every authored string in index.html is a key. This is where the catalog
-    // answers them, once, before anything is shown.
+    // A message put on screen while the page runs keeps the key it came from,
+    // so a change of language can ask the catalog again instead of the caller
+    // having to decide the message a second time. Every other string on the
+    // page is rendered from state, which a language does not touch.
+    const liveMessages = new Map();
+
+    function setMessage(element, key, values) {
+        if (key) liveMessages.set(element, [key, values]);
+        else liveMessages.delete(element);
+        element.textContent = key ? t(key, values) : '';
+    }
+
+    // Every authored string in index.html is a key, and so is every message
+    // already on screen. This is where the catalog answers all of them.
     function applyStrings() {
         document.querySelectorAll('[data-i18n]').forEach((element) => {
             element.textContent = t(element.dataset.i18n);
@@ -35,6 +51,27 @@
         document.querySelectorAll('[data-i18n-placeholder]').forEach((element) => {
             element.setAttribute('placeholder', t(element.dataset.i18nPlaceholder));
         });
+        liveMessages.forEach(([key, values], element) => {
+            element.textContent = t(key, values);
+        });
+    }
+
+    // A failure carries the key of the sentence it has earned. A request that
+    // never reached the device carries none, and the caller supplies its own
+    // rather than putting the browser's own wording on screen.
+    // A flag the device did not send is a fault, not a false. Read as false it
+    // becomes a state the page renders convincingly and then acts on, which is
+    // how a field that changes name turns into missing commands rather than
+    // into something the reader can do anything about.
+    function flag(payload, name) {
+        if (typeof payload[name] !== 'boolean') throw failure('errors.pageOutOfDate');
+        return payload[name];
+    }
+
+    function failure(key) {
+        const error = new Error(key);
+        error.messageKey = key;
+        return error;
     }
 
     const statusPollMs = 1000;
@@ -55,7 +92,7 @@
     let auth = {
         passwordSet: false,
         authenticated: false,
-        terminalAvailable: false
+        fromSetupAp: false
     };
     let authAvailable = false;
     let authRetryTimer = null;
@@ -77,6 +114,9 @@
     let statusTimer = null;
     let statusSeen = false;
     let statusLost = false;
+    // Why the readings stopped being trusted, so a change of language asks the
+    // question again rather than answering a different one.
+    let statusLostKey = 'app.connectionLost';
     let selectedView = null;
 
     let wifiMode = 'summary';
@@ -89,6 +129,9 @@
     // True while a scan has been asked for and no result has arrived. The
     // footer offers Scan for a finished list, not during the wait.
     let scanPending = false;
+    // The last scan this page rendered. Null until one is asked for, so a
+    // change of language cannot invent a scan that never happened.
+    let lastScan = null;
     // The last /api/wifi/trial payload this page has seen, and when the attempt
     // now on screen was first observed. Both are cleared when the panel closes.
     let lastTrial = null;
@@ -198,6 +241,79 @@
         }
     }
 
+    function storedLocale() {
+        try {
+            return localStorage.getItem('locale');
+        } catch (error) {
+            return null;
+        }
+    }
+
+    // The choice belongs to the browser reading the page, not to the device:
+    // two people on two phones read the same device in two languages.
+    function resolveLocale() {
+        const stored = storedLocale();
+        if (locales.includes(stored)) return stored;
+        const preferred = navigator.languages?.length
+            ? navigator.languages
+            : [navigator.language || ''];
+        for (const tag of preferred) {
+            const base = String(tag).toLowerCase().split('-')[0];
+            if (locales.includes(base)) return base;
+        }
+        return 'en';
+    }
+
+    function useLocale(next) {
+        locale = next;
+        catalog = catalogs[next] || {};
+        document.documentElement.lang = next;
+    }
+
+    // Two languages, so the button is the other one. Each catalog names the
+    // language it is not, which is why the label needs no branch.
+    function renderLanguageToggle() {
+        const label = t('language.switch');
+        $('languageToggle').setAttribute('aria-label', label);
+        $('languageToggle').setAttribute('title', label);
+    }
+
+    // Language is presentation, so nothing the page is holding changes here.
+    // Every panel renders its text from state it already has, and the messages
+    // already on screen kept the key they came from.
+    function applyLocale() {
+        applyStrings();
+        applyTheme(document.documentElement.dataset.theme);
+        renderLanguageToggle();
+        renderAuthDialog();
+        renderWifiCredentialsName();
+        renderWifiSummary();
+        renderWifiActions();
+        renderTrialCard();
+        if (lastScan) renderScanState(lastScan.state, lastScan.networks);
+        renderTerminalPause();
+        renderTerminalPlaceholder();
+        updateTerminalCounters();
+        refreshSaveState();
+        if (lastStatus) renderStatusPanel(lastStatus);
+        if (statusLost) markStatusLost(statusLostKey);
+    }
+
+    function initializeLanguage() {
+        useLocale(resolveLocale());
+        applyStrings();
+        renderLanguageToggle();
+        $('languageToggle').addEventListener('click', () => {
+            useLocale(locale === 'nl' ? 'en' : 'nl');
+            try {
+                localStorage.setItem('locale', locale);
+            } catch (error) {
+                // A browser that refuses storage still switches for this visit.
+            }
+            applyLocale();
+        });
+    }
+
     function storedTheme() {
         try {
             return localStorage.getItem('theme');
@@ -211,8 +327,11 @@
         const dark = theme === 'dark';
         // The button offers the other theme, so it carries that theme's icon.
         $('themeIcon').setAttribute('href', dark ? '#icon-sun' : '#icon-moon');
-        $('themeToggle').setAttribute(
-            'aria-label', t(dark ? 'theme.switchToLight' : 'theme.switchToDark'));
+        // Both header controls are icon-only, so both name their command the
+        // same two ways: to assistive technology, and on hover.
+        const label = t(dark ? 'theme.switchToLight' : 'theme.switchToDark');
+        $('themeToggle').setAttribute('aria-label', label);
+        $('themeToggle').setAttribute('title', label);
     }
 
     function resolveTheme() {
@@ -275,19 +394,29 @@
                 selectView(next.dataset.view, true);
             });
         });
+
+        // The other way into setup. Signing in lands there by itself, which is
+        // where the sentence was pointing.
+        $('bridgeAction').addEventListener('click', () => {
+            if (authAvailable && auth.authenticated) {
+                selectView('setupView');
+            } else {
+                openAuthDialog();
+            }
+        });
     }
 
-    function setFieldError(field, message = '') {
+    function setFieldError(field, key = '', values) {
         const input = $(field);
         const error = $(`${field}Error`);
         if (!error) {
             return;
         }
 
-        error.textContent = message;
-        error.hidden = !message;
+        setMessage(error, key, values);
+        error.hidden = !key;
         if (input) {
-            if (message) {
+            if (key) {
                 input.setAttribute('aria-invalid', 'true');
             } else {
                 input.removeAttribute('aria-invalid');
@@ -334,22 +463,21 @@
         ['ssid', 'wifiSecurity', 'wifiPassword'].forEach((field) => setFieldError(field));
     }
 
-    function setAuthError(message = '') {
+    function setAuthError(key = '') {
         ['authError', 'authBootstrapError'].forEach((id) => {
-            const error = $(id);
-            error.textContent = message;
-            error.hidden = !message;
+            setMessage($(id), key);
+            $(id).hidden = !key;
         });
     }
 
-    function setPasswordChangeError(message = '') {
-        $('passwordChangeError').textContent = message;
-        $('passwordChangeError').hidden = !message;
+    function setPasswordChangeError(key = '') {
+        setMessage($('passwordChangeError'), key);
+        $('passwordChangeError').hidden = !key;
     }
 
-    function setPasswordChangeFeedback(message = '') {
-        $('passwordChangeFeedback').textContent = message;
-        $('passwordChangeFeedback').hidden = !message;
+    function setPasswordChangeFeedback(key = '') {
+        setMessage($('passwordChangeFeedback'), key);
+        $('passwordChangeFeedback').hidden = !key;
     }
 
     function setPasswordToggle(button, shown) {
@@ -397,13 +525,13 @@
     async function fetchAuth() {
         const response = await fetch('/api/auth', { cache: 'no-store' });
         if (!response.ok) {
-            throw new Error(t('errors.authStateUnavailable'));
+            throw failure('auth.signIn.incomplete');
         }
         const state = await response.json();
         auth = {
             passwordSet: Boolean(state.passwordSet),
             authenticated: Boolean(state.authenticated),
-            terminalAvailable: Boolean(state.terminalAvailable)
+            fromSetupAp: Boolean(state.fromSetupAp)
         };
         authAvailable = true;
         authCsrfToken = state.csrfToken || '';
@@ -413,7 +541,7 @@
 
     function authDialogMode() {
         if (!authAvailable) return 'unavailable';
-        if (!auth.passwordSet && auth.terminalAvailable) return 'bootstrap';
+        if (!auth.passwordSet && auth.fromSetupAp) return 'bootstrap';
         if (!auth.passwordSet) return 'not-configured';
         return 'login';
     }
@@ -440,8 +568,8 @@
             title = t('auth.notConfigured.title');
             text = t('auth.notConfigured.text');
         } else {
-            title = authDialogNotice?.title || title;
-            text = authDialogNotice?.text || text;
+            title = authDialogNotice?.title ? t(authDialogNotice.title) : title;
+            text = authDialogNotice?.text ? t(authDialogNotice.text) : text;
         }
 
         $('authDialogTitle').textContent = title;
@@ -498,13 +626,10 @@
         $('navigation').hidden = !authenticated;
         $('setupTab').hidden = !authenticated;
         $('statusTab').hidden = !authenticated;
-        // The Status tab titles this view once it exists. Signed out there are
-        // no tabs, so the heading is the only title the page has.
-        $('bridgeTitle').hidden = authenticated;
-        $('terminalTab').hidden = !(authenticated && auth.terminalAvailable);
+        $('terminalTab').hidden = !(authenticated && auth.fromSetupAp);
         $('securitySection').hidden = !authenticated;
         $('buildGroup').hidden = !authenticated;
-        $('chooseNetwork').hidden = !auth.terminalAvailable;
+        renderWifiSummary();
         $('loginButton').hidden = authenticated;
         $('logoutButton').hidden = !authenticated;
         setStatusPanelSemantics(authenticated);
@@ -602,22 +727,21 @@
         password_save_failed: 'errors.passwordSaveFailed',
         bootstrap_requires_setup_ap: 'auth.notConfigured.text',
         configuration_not_allowed: 'errors.notAllowedHere',
-        csrf: 'errors.csrf'
+        csrf: 'errors.pageOutOfDate'
     };
 
-    function authErrorMessage(result, fallback) {
-        const key = authErrorMessages[result.error];
-        return key ? t(key) : fallback;
+    function authErrorKey(result, fallback) {
+        return authErrorMessages[result.error] || fallback;
     }
 
     async function loginWithPassword(password) {
         const { response, result } = await postAuth('/api/auth/login', { password });
         if (!response.ok) {
-            throw new Error(authErrorMessage(result, t('errors.invalidPassword')));
+            throw failure(authErrorKey(result, 'errors.invalidPassword'));
         }
         await fetchAuth();
         if (!auth.authenticated) {
-            throw new Error(t('auth.signIn.incomplete'));
+            throw failure('auth.signIn.incomplete');
         }
     }
 
@@ -626,7 +750,7 @@
         if (authRequestPending) return;
         const password = $('loginPassword').value;
         if (!password) {
-            setAuthError(t('auth.signIn.passwordRequired'));
+            setAuthError('auth.signIn.passwordRequired');
             $('loginPassword').focus();
             return;
         }
@@ -645,7 +769,7 @@
             // disabling the submit button dropped focus, and the mode may have
             // changed mid-request while the pending guard suppressed focus.
             setAuthRequestPending(false);
-            setAuthError(error instanceof Error ? error.message : t('auth.signIn.failed'));
+            setAuthError(error?.messageKey || 'auth.signIn.failed');
             focusAuthDialog();
         }
     }
@@ -657,12 +781,12 @@
         const confirm = $('bootstrapPasswordConfirm').value;
 
         if (!password) {
-            setAuthError(t('auth.bootstrap.passwordRequired'));
+            setAuthError('auth.bootstrap.passwordRequired');
             $('bootstrapPassword').focus();
             return;
         }
         if (password !== confirm) {
-            setAuthError(t('auth.bootstrap.mismatch'));
+            setAuthError('auth.bootstrap.mismatch');
             $('bootstrapPasswordConfirm').focus();
             return;
         }
@@ -674,7 +798,7 @@
                 newPassword: password
             });
             if (!response.ok) {
-                throw new Error(authErrorMessage(result, t('auth.bootstrap.failed')));
+                throw failure(authErrorKey(result, 'auth.bootstrap.failed'));
             }
 
             await fetchAuth();
@@ -692,7 +816,7 @@
             // mode — which here may have become "login" if the password was
             // created but the automatic sign-in failed.
             setAuthRequestPending(false);
-            setAuthError(error instanceof Error ? error.message : t('auth.bootstrap.failed'));
+            setAuthError(error?.messageKey || 'auth.bootstrap.failed');
             focusAuthDialog();
         }
     }
@@ -765,17 +889,17 @@
         setPasswordChangeError();
         setPasswordChangeFeedback();
         if (!currentPassword) {
-            setPasswordChangeError(t('security.password.currentRequired'));
+            setPasswordChangeError('security.password.currentRequired');
             $('currentAdminPassword').focus();
             return;
         }
         if (!newPassword) {
-            setPasswordChangeError(t('security.password.newRequired'));
+            setPasswordChangeError('security.password.newRequired');
             $('newAdminPassword').focus();
             return;
         }
         if (newPassword !== confirmPassword) {
-            setPasswordChangeError(t('security.password.mismatch'));
+            setPasswordChangeError('security.password.mismatch');
             $('confirmAdminPassword').focus();
             return;
         }
@@ -787,7 +911,7 @@
                 newPassword
             });
             if (!response.ok) {
-                throw new Error(authErrorMessage(result, t('security.password.failed')));
+                throw failure(authErrorKey(result, 'security.password.failed'));
             }
 
             closePasswordDialog();
@@ -801,13 +925,12 @@
 
             auth.authenticated = false;
             handleAuthenticationLoss(
-                { title: t('security.password.changedTitle') },
+                { title: 'security.password.changedTitle' },
                 true
             );
             announce(t('security.password.changedAnnounced'));
         } catch (error) {
-            setPasswordChangeError(
-                error instanceof Error ? error.message : t('security.password.failed'));
+            setPasswordChangeError(error?.messageKey || 'security.password.failed');
         } finally {
             button.disabled = false;
         }
@@ -872,13 +995,12 @@
         $('wifiCredentials').hidden = mode !== 'credentials';
         $('manualNetworkFields').hidden = mode !== 'manual';
         $('wifiTrial').hidden = mode !== 'connecting' && mode !== 'connected';
-        $('wifiCredentialsName').textContent = $('ssid').value || t('wifi.editor.networkHeading');
+        renderWifiCredentialsName();
         // A message belongs to the step that produced it. Forget writes its
         // outcome after the step change below, so this cannot erase it.
         clearWifiFeedback();
         renderPasswordEditor();
         renderTrialMessage();
-        renderLanTrialNotice();
         renderWifiActions();
     }
 
@@ -904,7 +1026,7 @@
         // list, or close the flow. Label and icon are chosen together so that
         // they cannot drift apart.
         const exit = wifiMode === 'connecting' ? { text: t('common.cancel'), icon: 'x' }
-            : back || (failed && auth.terminalAvailable) ? { text: t('common.back'), icon: 'arrow-left' }
+            : back || failed ? { text: t('common.back'), icon: 'arrow-left' }
             : { text: t('common.done'), icon: 'check' };
         $('backToNetworksText').textContent = exit.text;
         setIcon($('backToNetworksIcon'), exit.icon);
@@ -912,6 +1034,12 @@
         $('useNetwork').hidden = !editingNetwork();
         $('useNetworkText').textContent = t(failed ? 'common.retry' : 'common.connect');
         setIcon($('useNetworkIcon'), failed ? 'refresh-cw' : 'wifi');
+    }
+
+    // The panel is titled by the network being entered, and by the word for
+    // one before it has a name.
+    function renderWifiCredentialsName() {
+        $('wifiCredentialsName').textContent = $('ssid').value || t('wifi.editor.networkHeading');
     }
 
     function renderWifiSummary() {
@@ -924,30 +1052,21 @@
         $('passwordState').textContent = t(wifiPasswordSaved ? 'wifi.password.saved' : 'wifi.password.notSet');
         // Named where the saved network is named, because a device that shows
         // what it remembers has to offer the way to make it forget.
-        $('forgetNetwork').hidden = !configured;
-        // Scanning is a setup-AP capability; from the LAN a network is typed.
-        $('chooseNetwork').hidden = !auth.terminalAvailable;
-        // From the LAN, Change opens the same typed editor Add would, so Add
-        // appears only where it reaches something Change does not.
-        $('enterNetwork').hidden = !auth.terminalAvailable && configured;
+        // Every command that changes the network belongs to the setup AP.
+        // Reaching this page over the LAN proves the saved network works, so
+        // that is where there is least reason to change it and most to lose,
+        // and where the attempt could report its result nowhere.
+        $('changeNetwork').hidden = !auth.fromSetupAp;
+        $('changePassword').hidden = !auth.fromSetupAp;
+        $('forgetNetwork').hidden = !configured || !auth.fromSetupAp;
+        $('chooseNetwork').hidden = !auth.fromSetupAp;
+        $('enterNetwork').hidden = !auth.fromSetupAp;
     }
 
     function renderPasswordEditor() {
         const visible = editingNetwork() && $('wifiSecurity').value === 'secured';
         $('passwordEditor').hidden = !visible;
         $('wifiPassword').disabled = !visible;
-    }
-
-    // Say it before starting, not after the page goes quiet: from the LAN the
-    // attempt moves the device off the network this page is talking over.
-    function renderLanTrialNotice() {
-        const show = editingNetwork() && !auth.terminalAvailable;
-        $('lanTrialNotice').hidden = !show;
-        if (!show) return;
-        const setup = lastStatus?.setupSsid;
-        $('lanTrialNotice').textContent = setup
-            ? t('wifi.editor.lanNoticeNamed', { setup })
-            : t('wifi.editor.lanNoticeUnnamed');
     }
 
     // Every way into the editor starts from a known network, so a value left
@@ -966,10 +1085,6 @@
     }
 
     function returnToNetworkChooser() {
-        if (!auth.terminalAvailable) {
-            showManualNetwork(true);
-            return;
-        }
         setWifiMode('chooser');
         scanNetworks();
     }
@@ -992,25 +1107,32 @@
         if (scanPending) scanNetworks();
     }
 
-    // Two ways in with two intents: correcting the network the device already
-    // has, and naming one the scan cannot show.
-    function showManualNetwork(seedSaved) {
-        seedNetworkFields(
-            seedSaved ? savedNetwork.ssid : '',
-            seedSaved ? savedNetwork.wifiSecurity : 'secured');
+    // Two ways in with one intent: naming a network the list cannot show,
+    // from the summary or from the list itself. It never starts from the saved
+    // network, because replacing that one is what the list is for.
+    function showManualNetwork() {
+        seedNetworkFields('', 'secured');
         clearSaveFeedback();
         setWifiMode('manual');
         $('ssid').focus();
     }
 
     function selectNetwork(ssid, secured) {
-        // Every network is confirmed before it is attempted, open or not: a
-        // password that used to be reusable no longer is, because only a trial
-        // may store one and a trial is given what the user typed.
+        // A secured network is confirmed before it is attempted: a password
+        // that used to be reusable no longer is, because only a trial may
+        // store one and a trial is given what the user typed. An open network
+        // has nothing to ask, so the choice is the attempt and no step stands
+        // between them. The list holds until the device accepts the attempt,
+        // because a step shown while the request is in flight is a step the
+        // user is given no reason for.
         seedNetworkFields(ssid, secured ? 'secured' : 'open');
         clearSaveFeedback();
-        setWifiMode('credentials');
-        if (secured) $('wifiPassword').focus();
+        if (secured) {
+            setWifiMode('credentials');
+            $('wifiPassword').focus();
+            return;
+        }
+        startTrial();
     }
 
     function changePassword() {
@@ -1029,7 +1151,7 @@
         const ssid = $('ssid').value;
         const password = $('wifiPassword').value;
         if (!ssid) {
-            setFieldError('ssid', t('wifi.editor.ssidRequired'));
+            setFieldError('ssid', 'wifi.editor.ssidRequired');
             $('ssid').focus();
             return null;
         }
@@ -1037,26 +1159,26 @@
             return { ssid, wifiSecurity: 'open', wifiPassword: '' };
         }
         if (password.length < 8 || password.length > 63) {
-            setFieldError('wifiPassword', t('wifi.password.length'));
+            setFieldError('wifiPassword', 'wifi.password.length');
             $('wifiPassword').focus();
             return null;
         }
         if (!/^[\x20-\x7e]+$/.test(password)) {
-            setFieldError('wifiPassword', t('wifi.password.characters'));
+            setFieldError('wifiPassword', 'wifi.password.characters');
             $('wifiPassword').focus();
             return null;
         }
         return { ssid, wifiSecurity: 'secured', wifiPassword: password };
     }
 
-    function setTrialMessage(message) {
-        $('trialMessage').hidden = !message;
-        $('trialMessage').textContent = message || '';
+    function setTrialMessage(key = '', values) {
+        setMessage($('trialMessage'), key, values);
+        $('trialMessage').hidden = !key;
     }
 
     function renderTrialMessage() {
-        setTrialMessage(
-            editingNetwork() && trialFailure() ? trialMessage(lastTrial) : '');
+        const message = editingNetwork() && trialFailure() ? trialMessage(lastTrial) : [];
+        setTrialMessage(...message);
     }
 
     // One outcome, one message. None of these claims more than the device was
@@ -1067,16 +1189,16 @@
         switch (trial.outcome) {
             case 'auth_failed':
                 return weakSignal(trial)
-                    ? t('wifi.trial.authFailedWeakSignal', { network, rssi: Number(trial.rssi) })
-                    : t('wifi.trial.authFailed', { network });
+                    ? ['wifi.trial.authFailedWeakSignal', { network, rssi: Number(trial.rssi) }]
+                    : ['wifi.trial.authFailed', { network }];
             case 'security_mismatch':
-                return t('wifi.trial.securityMismatch', { network });
+                return ['wifi.trial.securityMismatch', { network }];
             case 'not_found':
-                return t('wifi.trial.notFound', { network });
+                return ['wifi.trial.notFound', { network }];
             case 'could_not_save':
-                return t('wifi.trial.couldNotSave', { network });
+                return ['wifi.trial.couldNotSave', { network }];
             default:
-                return t('wifi.trial.couldNotConnect', { network });
+                return ['wifi.trial.couldNotConnect', { network }];
         }
     }
 
@@ -1176,11 +1298,14 @@
             }
             const result = await safeJson(response);
             if (!response.ok) {
-                if (result.field && $(`${result.field}Error`)) {
-                    setFieldError(result.field, t('wifi.trial.rejectedValue'));
+                // A rejected value is corrected where it was typed. An attempt
+                // that began at the list has no field to correct, so there the
+                // refusal is reported whole, above the list it came from.
+                if (result.field && $(`${result.field}Error`) && editingNetwork()) {
+                    setFieldError(result.field, 'errors.valueRejected');
                     focusField(result.field);
                 } else {
-                    setTrialMessage(t('wifi.trial.startFailed'));
+                    setTrialMessage('wifi.trial.startFailed');
                 }
                 return;
             }
@@ -1193,7 +1318,7 @@
             startTrialPolling();
             announce(t('wifi.trial.announced', { network: values.ssid }));
         } catch {
-            setTrialMessage(t('errors.unreachable'));
+            setTrialMessage('wifi.trial.startFailed');
         } finally {
             $('useNetwork').disabled = false;
         }
@@ -1215,7 +1340,7 @@
     }
 
     async function leaveTrial() {
-        const toNetworkList = auth.terminalAvailable && wifiMode !== 'connected';
+        const toNetworkList = wifiMode !== 'connected';
         await dismissTrial();
         hidePassword('wifiPassword');
         clearWifiFieldErrors();
@@ -1253,6 +1378,14 @@
     }
 
     function renderTrial() {
+        renderTrialCard();
+        renderTrialMessage();
+        renderWifiActions();
+    }
+
+    // The attempt itself. The message under it belongs to the step that
+    // produced it, so it is not re-derived from here.
+    function renderTrialCard() {
         if (wifiMode === 'connecting') {
             const seconds = Math.max(0, Math.round((Date.now() - trialStartedAt) / 1000));
             $('trialTitle').textContent = t('wifi.trial.connecting',
@@ -1263,8 +1396,6 @@
         } else if (wifiMode === 'connected') {
             renderHandoff();
         }
-        renderTrialMessage();
-        renderWifiActions();
     }
 
     function renderHandoff() {
@@ -1277,22 +1408,20 @@
         // later, and the setup network without an address is a later dropout
         // answering a phone that joined it to find out what went wrong.
         const handoff = Boolean(lastTrial?.apActive) && Boolean(address);
-        $('trialDetail').textContent = handoff ? '' : t('wifi.trial.saved');
+        $('trialDetail').textContent = '';
         $('trialHandoff').hidden = !handoff;
         if (!handoff) return;
         // Where an address works is half the address: this one answers on the
         // network the device has just joined, and on no other.
-        $('trialHandoffAddress').textContent = t('wifi.handoff.address', { network, address });
-        // Only a reader on the setup network is about to lose it, so only that
-        // reader is told to move. The deadline is stated as the rule the
-        // firmware follows, not as time remaining, because a card reloaded
+        $('trialHandoffAddress').textContent = t('wifi.handoff.address', { address, network });
+        // Whoever reads this card is on the setup network, because that is the
+        // only place an attempt can start. The deadline is stated as the rule
+        // the firmware follows, not as time remaining, because a card reloaded
         // eight minutes in cannot know how much of the window is left.
         const setup = lastStatus?.setupSsid;
-        $('trialHandoffNext').hidden = !auth.terminalAvailable;
-        $('trialHandoffNext').textContent = auth.terminalAvailable
-            ? t(setup ? 'wifi.handoff.nextNamed' : 'wifi.handoff.nextUnnamed',
-                { setup, network, address })
-            : '';
+        $('trialHandoffNext').textContent = t(
+            setup ? 'wifi.handoff.nextNamed' : 'wifi.handoff.nextUnnamed',
+            { setup, network });
     }
 
     function signalIcon(rssi) {
@@ -1322,6 +1451,7 @@
     }
 
     function renderScanState(state, networks = []) {
+        lastScan = { state, networks };
         const list = $('networkList');
         list.replaceChildren();
         scanPending = state === 'idle' || state === 'scanning';
@@ -1443,7 +1573,7 @@
     }
 
     async function scanNetworks() {
-        if (!auth.authenticated || !auth.terminalAvailable) {
+        if (!auth.authenticated || !auth.fromSetupAp) {
             return;
         }
         stopScanPolling();
@@ -1526,6 +1656,9 @@
     }
 
     function refreshSaveState() {
+        // savePending owns the label as well as the disabled state: the button
+        // is the only place a save in progress is reported.
+        $('saveText').textContent = t(savePending ? 'common.saving' : 'common.save');
         if (!configurationLoaded || !configurationBaseline) {
             $('save').disabled = true;
             return;
@@ -1535,26 +1668,26 @@
         renderTcpRuntime(lastStatus);
     }
 
-    function showSaveFeedback(message, state = 'success', icon = 'circle-check') {
+    function showSaveFeedback(key, state = 'success', icon = 'circle-check') {
         $('saveState').hidden = false;
         $('saveState').dataset.state = state;
-        $('saveStateText').textContent = message;
+        setMessage($('saveStateText'), key);
         setIcon($('saveStateIcon'), icon);
     }
 
     function clearSaveFeedback() {
         $('saveState').hidden = true;
-        $('saveStateText').textContent = '';
+        setMessage($('saveStateText'), '');
         $('saveState').removeAttribute('data-state');
     }
 
     // Forget answers beside the network it removes. The save row is three
     // sections further down the page, and an answer that far from the button
     // reads as no answer at all.
-    function showWifiFeedback(message, state, icon) {
+    function showWifiFeedback(key, state, icon) {
         $('wifiState').hidden = false;
         $('wifiState').dataset.state = state;
-        $('wifiStateText').textContent = message;
+        setMessage($('wifiStateText'), key);
         setIcon($('wifiStateIcon'), icon);
         // The spinner belongs to the message, not to the caller: the verdict
         // that replaces "Forgetting..." must stop it without being asked to.
@@ -1563,14 +1696,14 @@
 
     function clearWifiFeedback() {
         $('wifiState').hidden = true;
-        $('wifiStateText').textContent = '';
+        setMessage($('wifiStateText'), '');
         $('wifiState').removeAttribute('data-state');
     }
 
     function validateNumberField(id, min, max) {
         const value = fieldNumber(id);
         if (!Number.isInteger(value) || value < min || value > max) {
-            setFieldError(id, t('errors.range', { min, max }));
+            setFieldError(id, 'errors.range', { min, max });
             return false;
         }
         return true;
@@ -1584,9 +1717,9 @@
         const listenValid = Number.isInteger(listenPort) && listenPort >= 0 && listenPort <= 65535;
         if (!listenValid) {
             if (values.tcpMode === 'listen') {
-                setFieldError('tcpListenPort', t('errors.portRange'));
+                setFieldError('tcpListenPort', 'errors.portRange');
             } else {
-                setFieldError('tcpMode', t('errors.correctListenSettings'));
+                setFieldError('tcpMode', 'errors.correctListenSettings');
             }
             valid = false;
         }
@@ -1599,15 +1732,15 @@
         if (!connectValid) {
             if (values.tcpMode === 'connect') {
                 if (!hasRemoteHost && remotePort !== 0) {
-                    setFieldError('tcpRemoteHost', t('errors.serverRequired'));
+                    setFieldError('tcpRemoteHost', 'errors.serverRequired');
                 }
                 if (hasRemoteHost && !hasRemotePort) {
-                    setFieldError('tcpRemotePort', t('errors.remotePortRequired'));
+                    setFieldError('tcpRemotePort', 'errors.remotePortRequired');
                 } else if (!remotePortInRange) {
-                    setFieldError('tcpRemotePort', t('errors.portRange'));
+                    setFieldError('tcpRemotePort', 'errors.portRange');
                 }
             } else {
-                setFieldError('tcpMode', t('errors.correctConnectSettings'));
+                setFieldError('tcpMode', 'errors.correctConnectSettings');
             }
             valid = false;
         }
@@ -1616,7 +1749,7 @@
         valid = validateNumberField('longPressRepeatMs', 250, 1000) && valid;
         const screenSaver = fieldNumber('screenSaverSeconds');
         if (!Number.isInteger(screenSaver) || screenSaver < 0 || (screenSaver > 0 && screenSaver < 5)) {
-            setFieldError('screenSaverSeconds', t('errors.screenSaverRange'));
+            setFieldError('screenSaverSeconds', 'errors.screenSaverRange');
             valid = false;
         }
 
@@ -1632,31 +1765,28 @@
         refreshSaveState();
     }
 
-    function backendErrorMessage(result, response) {
+    function backendErrorKey(result, response) {
         if (result.error === 'credential_change_not_allowed') {
             // Only a page old enough to predate the trial can produce this.
-            return t('errors.credentialChangeNotAllowed');
+            return 'errors.pageOutOfDate';
         }
         if (result.error === 'invalid_timeout') {
-            return t('errors.invalidTimeout');
+            return 'errors.invalidTimeout';
         }
         if (response.status === 400 && result.field) {
-            return t('errors.invalidValue');
+            return 'errors.valueRejected';
         }
         if (response.status === 400) {
-            return t('errors.settingsInvalid');
-        }
-        if (response.status === 500) {
-            return t('errors.settingsNotStored');
+            return 'errors.settingsInvalid';
         }
         if (response.status === 403) {
-            return t('errors.notAllowedHere');
+            return 'errors.notAllowedHere';
         }
-        return t('errors.saveFailed');
+        return 'errors.saveFailed';
     }
 
-    function showBackendFieldError(field, message) {
-        setFieldError(field, message);
+    function showBackendFieldError(field, key) {
+        setFieldError(field, key);
         const fieldMode = field === 'tcpListenPort'
             ? 'listen'
             : field === 'tcpRemoteHost' || field === 'tcpRemotePort'
@@ -1664,9 +1794,9 @@
               : null;
 
         if (fieldMode && tcpModeValue() !== fieldMode) {
-            setFieldError('tcpMode', t(fieldMode === 'listen'
+            setFieldError('tcpMode', fieldMode === 'listen'
                 ? 'errors.correctListenSettings'
-                : 'errors.correctConnectSettings'));
+                : 'errors.correctConnectSettings');
             focusField('tcpMode');
             return;
         }
@@ -1682,8 +1812,8 @@
         }
         auth.authenticated = false;
         handleAuthenticationLoss({
-            title: t('auth.sessionEnded.title'),
-            text: t('auth.sessionEnded.text')
+            title: 'auth.sessionEnded.title',
+            text: 'auth.sessionEnded.text'
         });
     }
 
@@ -1715,12 +1845,9 @@
     // settings rather than whatever the form currently holds.
     // Forgetting is not a credential write: it needs no trial and cannot fail
     // on the network, so it stays an ordinary settings save. It is confirmed
-    // because of where it leaves the user, not because it is hard to undo: from
-    // the LAN it drops the device off the network this page is reached over,
-    // and the way back is the setup AP printed on the display.
+    // because of where it leaves the user, not because it is hard to undo.
     function askToForget() {
-        $('forgetDialogDetail').textContent = t(
-            auth.terminalAvailable ? 'wifi.forget.detailSetupAp' : 'wifi.forget.detailLan',
+        setMessage($('forgetDialogDetail'), 'wifi.forget.detail',
             { network: savedNetwork.ssid });
         $('forgetDialog').showModal();
     }
@@ -1730,7 +1857,7 @@
         const forgotten = { ssid: '', wifiSecurity: 'unset' };
         $('forgetNetwork').disabled = true;
         clearSaveFeedback();
-        showWifiFeedback(t('wifi.forget.working'), 'warning', 'loader-circle');
+        showWifiFeedback('wifi.forget.working', 'warning', 'loader-circle');
         try {
             const response = await postConfiguration(forgotten, configurationBaseline);
             if (response.status === 401) {
@@ -1738,7 +1865,7 @@
                 return;
             }
             if (!response.ok) {
-                showWifiFeedback(t('wifi.forget.failed'), 'danger', 'circle-x');
+                showWifiFeedback('wifi.forget.failed', 'danger', 'circle-x');
                 return;
             }
             savedNetwork = forgotten;
@@ -1750,7 +1877,7 @@
             announce(t('wifi.forget.done'));
             window.setTimeout(refreshStatusNow, 250);
         } catch {
-            showWifiFeedback(t('errors.unreachable'), 'danger', 'circle-x');
+            showWifiFeedback('wifi.forget.failed', 'danger', 'circle-x');
         } finally {
             $('forgetNetwork').disabled = false;
         }
@@ -1765,8 +1892,7 @@
 
         savePending = true;
         let responseReceived = false;
-        $('save').disabled = true;
-        $('saveText').textContent = t('common.saving');
+        refreshSaveState();
         clearSaveFeedback();
 
         try {
@@ -1782,33 +1908,30 @@
             if (!response.ok) {
                 if (result.error === 'serial_error' && result.persisted === true) {
                     adoptPersistedConfiguration(values);
-                    showSaveFeedback(t('save.serialNotApplied'), 'warning', 'triangle-alert');
+                    showSaveFeedback('save.serialNotApplied', 'warning', 'triangle-alert');
                     return;
                 }
 
                 if (result.field && $(`${result.field}Error`)) {
-                    showBackendFieldError(result.field, backendErrorMessage(result, response));
-                    showSaveFeedback(t('errors.saveFailed'), 'danger', 'circle-x');
+                    showBackendFieldError(result.field, backendErrorKey(result, response));
+                    showSaveFeedback('errors.saveFailed', 'danger', 'circle-x');
                     return;
                 }
-                throw new Error(backendErrorMessage(result, response));
+                throw failure(backendErrorKey(result, response));
             }
 
             adoptPersistedConfiguration(values);
-            showSaveFeedback(t('save.done'), 'success', 'circle-check');
+            showSaveFeedback('save.done', 'success', 'circle-check');
 
             window.setTimeout(refreshStatusNow, 250);
         } catch (error) {
             if (!responseReceived) {
-                showSaveFeedback(t('save.unconfirmed'), 'warning', 'triangle-alert');
+                showSaveFeedback('save.unconfirmed', 'warning', 'triangle-alert');
             } else {
-                showSaveFeedback(
-                    error instanceof Error ? error.message : t('errors.saveFailed'),
-                    'danger', 'circle-x');
+                showSaveFeedback(error?.messageKey || 'errors.saveFailed', 'danger', 'circle-x');
             }
         } finally {
             savePending = false;
-            $('saveText').textContent = t('common.save');
             refreshSaveState();
         }
     }
@@ -1853,21 +1976,25 @@
         }
     }
 
-    function tcpModeText(mode) {
-        return t(mode === 'connect' ? 'tcp.modeConnectLong' : 'tcp.modeListenLong');
-    }
-
-    function tcpStateText(state, mode) {
+    // What the TCP link is doing and how well, answered together. Two switches
+    // over the same reading are two chances for the word and the colour to
+    // disagree. The bridge verdict is a different question: it folds Wi-Fi in.
+    function tcpLink(state, mode) {
         switch (state) {
-            case 'disabled': return t('tcp.state.disabled');
-            case 'waiting_for_wifi': return t('tcp.state.waitingForWifi');
-            case 'listening': return t('tcp.state.listening');
-            case 'connecting': return t('tcp.state.connecting');
-            case 'retrying': return t('tcp.state.retrying');
+            case 'disabled': return { text: t('tcp.state.disabled'), state: 'neutral' };
+            case 'waiting_for_wifi': return { text: t('tcp.state.waitingForWifi'), state: 'warning' };
+            case 'listening': return { text: t('tcp.state.listening'), state: 'success' };
+            case 'connecting': return { text: t('tcp.state.connecting'), state: 'warning' };
+            case 'retrying': return { text: t('tcp.state.retrying'), state: 'warning' };
             case 'connected':
-                return t(mode === 'listen' ? 'tcp.state.clientConnected' : 'tcp.state.connected');
-            case 'failure': return t('tcp.state.failure');
-            default: return '—';
+                return {
+                    text: t(mode === 'listen' ? 'tcp.state.clientConnected' : 'tcp.state.connected'),
+                    state: 'success'
+                };
+            case 'failure': return { text: t('tcp.state.failure'), state: 'danger' };
+            // A state this build has no word for is the page trailing the
+            // firmware, not the link in trouble, so it takes no colour here.
+            default: return { text: t('tcp.state.unknown'), state: 'unknown' };
         }
     }
 
@@ -1960,6 +2087,16 @@
         }
     }
 
+    // An address the device may not hold yet. 0.0.0.0 is the firmware saying it
+    // has none, which is not an address anyone can use.
+    function address(value) {
+        return value && value !== '0.0.0.0' ? value : '';
+    }
+
+    function stationAddress(status) {
+        return address(status.stationIp);
+    }
+
     function renderBridgeState(status) {
         const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
         const remote = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
@@ -1970,15 +2107,19 @@
         let state = 'neutral';
         let title = t('common.notConfigured');
         let detail = '';
+        // What is still to be set up is the one detail the reader can act on,
+        // so it is worded as the instruction it is and carried by the control
+        // that opens the page it names.
+        let action = '';
 
         if (!status.wifiConfigured || !tcpConfigured) {
             title = t('common.notConfigured');
             if (!status.wifiConfigured && !tcpConfigured) {
-                detail = t('bridge.needsWifiAndTcp');
+                action = t('bridge.needsWifiAndTcp');
             } else if (!status.wifiConfigured) {
-                detail = t('bridge.needsWifi');
+                action = t('bridge.needsWifi');
             } else {
-                detail = t(mode === 'listen' ? 'bridge.needsListenPort' : 'bridge.needsServer');
+                action = t(mode === 'listen' ? 'bridge.needsListenPort' : 'bridge.needsServer');
             }
         } else if (!status.wifiConnected) {
             const wifi = wifiFailure(status);
@@ -2001,7 +2142,7 @@
                 case 'listening':
                     title = t('bridge.readyTitle');
                     state = 'success';
-                    detail = t('bridge.ready', { port: listenPort.toLocaleString() });
+                    detail = t('bridge.ready', { port: listenPort });
                     break;
                 case 'connecting':
                     title = t('bridge.connectingTitle');
@@ -2027,15 +2168,109 @@
                         ? t('bridge.failureListen')
                         : t('bridge.failureConnect', { endpoint: remote });
                     break;
+                // Its own severity rather than neutral, so the rule below can
+                // hide the sentence for it while Not configured keeps one.
                 default:
-                    title = t('bridge.unknownTitle');
-                    state = 'warning';
+                    title = t('tcp.state.unknown');
+                    state = 'unknown';
             }
         }
 
         $('bridgeState').textContent = title;
         $('bridgeState').dataset.state = state;
         $('bridgeDetail').textContent = detail;
+        $('bridgeDetail').hidden = !detail;
+        $('bridgeAction').textContent = action;
+        $('bridgeAction').hidden = !action;
+        // The cards carry every configured value and every state the firmware
+        // reports, named or not. What they cannot say is why a link failed, what
+        // is still to be set up, and when the readings stopped being current, so
+        // the sentence is kept for those and dropped when it only repeats them.
+        $('bridgeStatus').hidden = state === 'success' || state === 'warning' || state === 'unknown';
+        renderBridgePath(status, mode, tcpConfigured);
+    }
+
+    // A network named by somebody else is the one value here that may not fit.
+    // It is cut with an ellipsis and kept whole on hover.
+    function setLinkName(element, text, title = text) {
+        element.textContent = text;
+        element.title = title;
+    }
+
+    // The same reading drawn as the star it is: the device in the middle and the
+    // three links it can hold at once. An icon is a participant, a card is a
+    // connection, and a dot is a state the firmware actually reports.
+    function renderBridgePath(status, mode, tcpConfigured) {
+        delete $('bridgePath').dataset.stale;
+        $('bridgeSerialValues').textContent = `${Number(status.baud) || '—'} · ${status.framing || '—'}`;
+        // The device's own address, and the only place it appears. Both modes
+        // spend the TCP card's second line on the far end of the connection.
+        $('bridgeHubAddress').textContent =
+            stationAddress(status) || t('bridge.noStationAddress');
+
+        // The glyph and the role label say which side of the medium this is,
+        // so the rest of the line is spent naming the network itself. The role
+        // in front is also what stops a missing name reading as a verdict on
+        // the TCP link, which then contradicted the two lines under it.
+        setLinkName($('bridgeTcpName'), status.stationSsid || t('common.notConfigured'));
+
+        // The socket the device holds. Listening, the port is the whole of it:
+        // the station address is already under Serial2WiFi, and repeating it
+        // here fills the line without adding a fact. A value the device does
+        // not have is named, never left blank: an empty line reads as a card
+        // that failed to load.
+        let values = t(mode === 'listen' ? 'bridge.portNotSet' : 'bridge.endpointNotSet');
+        let whole = values;
+        let port = '';
+        if (tcpConfigured) {
+            if (mode === 'listen') {
+                values = whole = t('bridge.portLabel', { port: Number(status.tcpListenPort) || 0 });
+            } else {
+                // The host is the only part allowed to end in an ellipsis; the
+                // port sits outside it and the hover still names both.
+                values = status.tcpRemoteHost;
+                port = ':' + Number(status.tcpRemotePort);
+                whole = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
+            }
+        }
+        setLinkName($('bridgeTcpValues'), values, whole);
+        $('bridgeTcpPort').textContent = port;
+        // Nothing configured means nothing observed, so there is no dot to show.
+        const link = tcpLink(status.tcpState, mode);
+        $('bridgeTcpState').hidden = !tcpConfigured;
+        $('bridgeTcpState').dataset.state = link.state;
+        $('bridgeTcpStateText').textContent = link.text;
+
+        // Management, not traffic, and always drawn. An AP that has shut itself
+        // down is normal, so the branch stays where it was and goes quiet
+        // instead of vanishing and moving everything around it.
+        const setupOn = Boolean(status.wifiApActive);
+        $('bridgePath').dataset.branch = setupOn ? 'on' : 'off';
+        setLinkName($('bridgeSetupName'), status.setupSsid || '');
+        $('bridgeSetupValues').textContent = address(status.setupIp);
+        $('bridgeSetupState').dataset.state = setupOn ? 'success' : 'neutral';
+        $('bridgeSetupStateText').textContent = t(setupOn ? 'status.setupApOn' : 'status.setupApOff');
+
+        // The driver counts the stations it holds; it cannot say what any of them
+        // is, and a browser naming itself answers a different question. None is
+        // its own word, because a leading zero reads as a measurement failing
+        // rather than as nobody being there.
+        const clients = setupOn ? Number(status.setupClients) || 0 : 0;
+        $('bridgeClients').dataset.clients = clients ? 'some' : 'none';
+        const counted = clients === 0
+            ? t('bridge.noDevicesConnected')
+            : t(clients === 1 ? 'bridge.deviceConnected' : 'bridge.devicesConnected',
+                { count: clients });
+        $('bridgeClientsLabel').textContent = counted;
+        // The compact layout gives this half a row, so it shows the count on
+        // its own. What is read aloud stays the whole sentence at every width.
+        $('bridgeClientsShort').textContent = clients === 0
+            ? t('bridge.noneConnected')
+            : t('bridge.countConnected', { count: clients });
+        $('bridgeClientsName').textContent = counted;
+
+        setIcon($('bridgePeerIcon'), mode === 'listen' ? 'laptop' : 'server');
+        $('bridgePeerLabel').textContent = t(mode === 'listen' ? 'bridge.tcpClient' : 'bridge.tcpServer');
     }
 
     function renderStatus(status) {
@@ -2043,14 +2278,14 @@
             const sessionEnded = auth.authenticated && !Boolean(status.authenticated);
             const deviceStateChanged =
                 auth.passwordSet !== Boolean(status.passwordSet) ||
-                auth.terminalAvailable !== Boolean(status.terminalAvailable);
+                auth.fromSetupAp !== Boolean(status.fromSetupAp);
             auth.passwordSet = Boolean(status.passwordSet);
-            auth.terminalAvailable = Boolean(status.terminalAvailable);
+            auth.fromSetupAp = Boolean(status.fromSetupAp);
             if (sessionEnded) {
                 auth.authenticated = false;
                 handleAuthenticationLoss({
-                    title: t('auth.sessionEnded.title'),
-                    text: t('auth.sessionEnded.text')
+                    title: 'auth.sessionEnded.title',
+                    text: 'auth.sessionEnded.text'
                 });
             } else if (deviceStateChanged) {
                 authStateChanged();
@@ -2058,41 +2293,15 @@
         }
         lastStatus = status;
         statusSeen = true;
+        renderStatusPanel(status);
+    }
+
+    // Every line reads from the status it is given, so a change of language
+    // renders the same reading again.
+    function renderStatusPanel(status) {
         $('firmwareBuild').textContent = status.firmwareBuild || '—';
         $('frontendBuild').textContent = status.frontendBuild || '—';
-        if (status.setupSsid) {
-            $('deviceName').textContent = status.setupSsid;
-        }
-
-        $('statusWifi').textContent = status.wifiConnected
-            ? t('status.wifiConnected')
-            : status.wifiConfigured
-              ? wifiFailure(status).title
-              : t('common.notConfigured');
-        $('stationIp').textContent = status.stationIp && status.stationIp !== '0.0.0.0' ? status.stationIp : '—';
-        $('configurationApState').textContent = t(status.wifiApActive ? 'status.setupApOn' : 'status.setupApOff');
-
-        const mode = status.tcpMode === 'connect' ? 'connect' : 'listen';
-        const listenPort = Number(status.tcpListenPort) || 0;
-        const remotePort = Number(status.tcpRemotePort) || 0;
-        const tcpConfigured = mode === 'listen'
-            ? listenPort > 0
-            : Boolean(status.tcpRemoteHost) && remotePort > 0;
-        $('statusTcpMode').textContent = tcpModeText(mode);
-        $('statusTcpState').textContent = status.tcpState === 'disabled' && !tcpConfigured
-            ? t('common.notConfigured')
-            : tcpStateText(status.tcpState, mode);
-        if (mode === 'listen') {
-            $('statusTcpEndpointLabel').textContent = t('status.tcpListenPortLabel');
-            $('statusTcpEndpoint').textContent = listenPort ? listenPort.toLocaleString() : '—';
-        } else {
-            $('statusTcpEndpointLabel').textContent = t('status.tcpServerLabel');
-            $('statusTcpEndpoint').textContent = endpoint(status.tcpRemoteHost, status.tcpRemotePort);
-        }
-
         const baud = Number(status.baud) || 0;
-        $('statusBaud').textContent = baud ? baud.toLocaleString() : '—';
-        $('statusFraming').textContent = status.framing || '—';
         $('statusS2N').textContent = formatBytes(status.serialToNetworkReceived);
         $('statusN2S').textContent = formatBytes(status.networkToSerialReceived);
         $('statusDrops').textContent = t('status.dropped', {
@@ -2101,7 +2310,7 @@
         });
 
         $('terminalSerialSettings').textContent = t('terminal.serialSettings', {
-            baud: baud ? baud.toLocaleString() : '—',
+            baud: baud || '—',
             framing: status.framing || '—'
         });
         renderBridgeState(status);
@@ -2111,13 +2320,20 @@
 
     // The notice owns the lost connection; this line owns the bridge state,
     // which is now unknown, and the detail owns the age of what is on screen.
-    function markStatusLost() {
+    function markStatusLost(key = 'app.connectionLost') {
         statusLost = true;
+        statusLostKey = key;
+        setMessage($('globalNoticeText'), key);
         $('globalNotice').hidden = false;
         $('statusContent').dataset.stale = 'true';
         $('bridgeState').textContent = t('bridge.unknownTitle');
         $('bridgeState').dataset.state = 'warning';
+        $('bridgePath').dataset.stale = 'true';
+        $('bridgeStatus').hidden = false;
         $('bridgeDetail').textContent = t('bridge.stale');
+        $('bridgeDetail').hidden = false;
+        // Nothing here is worth acting on while the reading cannot be trusted.
+        $('bridgeAction').hidden = true;
     }
 
     function markStatusRestored() {
@@ -2133,6 +2349,10 @@
             throw new Error('status unavailable');
         }
         const status = await response.json();
+        // One boundary for the whole contract: /api/auth carries these same
+        // flags from the same build, so a device that answers this one is a
+        // device this page can read.
+        ['authenticated', 'passwordSet', 'fromSetupAp'].forEach((name) => flag(status, name));
         markStatusRestored();
         renderStatus(status);
         return status;
@@ -2141,8 +2361,8 @@
     async function refreshStatusNow() {
         try {
             await fetchStatus();
-        } catch {
-            if (statusSeen) markStatusLost();
+        } catch (error) {
+            if (statusSeen) markStatusLost(error?.messageKey);
         }
     }
 
@@ -2157,8 +2377,8 @@
         stopStatusPolling();
         try {
             await fetchStatus();
-        } catch {
-            if (statusSeen) markStatusLost();
+        } catch (error) {
+            if (statusSeen) markStatusLost(error?.messageKey);
         } finally {
             statusTimer = window.setTimeout(pollStatus, statusLost ? 1500 : statusPollMs);
         }
@@ -2169,10 +2389,10 @@
         return `${protocol}//${window.location.host}/terminal`;
     }
 
-    function setTerminalConnection(iconName, text, state, spinning = false) {
+    function setTerminalConnection(iconName, key, state, spinning = false, values) {
         setIcon($('terminalConnectionIcon'), iconName);
         $('terminalConnectionIcon').closest('svg').classList.toggle('spin', spinning);
-        $('terminalConnectionText').textContent = text;
+        setMessage($('terminalConnectionText'), key, values);
         $('terminalConnection').dataset.state = state;
     }
 
@@ -2181,7 +2401,7 @@
     }
 
     function canSendTerminalBytes() {
-        return terminalSocket?.readyState === WebSocket.OPEN && auth.authenticated && auth.terminalAvailable && !tcpOwnsSerial();
+        return terminalSocket?.readyState === WebSocket.OPEN && auth.authenticated && auth.fromSetupAp && !tcpOwnsSerial();
     }
 
     function updateTerminalWriteAccess() {
@@ -2195,11 +2415,11 @@
         // beside the controls it describes, so read-only is explained where the
         // disabled box is. With no connection there is nothing to describe.
         if (!socketConnected) {
-            hint.textContent = '';
+            setMessage(hint, '');
             return;
         }
-        setTerminalConnection('circle-check', t('terminal.connected'), 'success');
-        hint.textContent = t(tcpOwnsSerial() ? 'terminal.readOnlyHint' : 'terminal.typingHint');
+        setTerminalConnection('circle-check', 'terminal.connected', 'success');
+        setMessage(hint, tcpOwnsSerial() ? 'terminal.readOnlyHint' : 'terminal.typingHint');
     }
 
     function updateTerminalCounters() {
@@ -2428,11 +2648,22 @@
         sendTerminalBytes(terminalEncoder.encode(text));
     }
 
+    // What the empty terminal is waiting for. CSS draws it from this
+    // attribute, so it never joins the text a reader copies out of the output.
+    function renderTerminalPlaceholder() {
+        $('terminalOutput').dataset.empty = t('terminal.waiting');
+    }
+
+    // One icon means one thing, so the label and the icon are chosen together.
+    function renderTerminalPause() {
+        $('terminalPauseText').textContent = t(terminalPaused ? 'common.resume' : 'common.pause');
+        setIcon($('terminalPauseIcon'), terminalPaused ? 'play' : 'pause');
+    }
+
     function toggleTerminalPause() {
         terminalPaused = !terminalPaused;
         $('browserTerminal').dataset.paused = String(terminalPaused);
-        $('terminalPauseText').textContent = t(terminalPaused ? 'common.resume' : 'common.pause');
-        setIcon($('terminalPauseIcon'), terminalPaused ? 'play' : 'pause');
+        renderTerminalPause();
         if (!terminalPaused) renderTerminal();
     }
 
@@ -2458,8 +2689,11 @@
         // the terminal is down, so this states only what happens next. It also
         // keeps the line short enough not to wrap at 375px.
         const seconds = Math.max(0, Math.ceil((terminalRetryAt - Date.now()) / 1000));
-        setTerminalConnection('triangle-alert',
-            seconds > 0 ? t('terminal.retryingIn', { seconds }) : t('terminal.retrying'), 'warning');
+        if (seconds > 0) {
+            setTerminalConnection('triangle-alert', 'terminal.retryingIn', 'warning', false, { seconds });
+        } else {
+            setTerminalConnection('triangle-alert', 'terminal.retrying', 'warning');
+        }
     }
 
     function scheduleTerminalReconnect() {
@@ -2480,7 +2714,7 @@
         if (
             !terminalWanted ||
             !auth.authenticated ||
-            !auth.terminalAvailable ||
+            !auth.fromSetupAp ||
             terminalSocket?.readyState === WebSocket.OPEN ||
             terminalSocket?.readyState === WebSocket.CONNECTING
         ) {
@@ -2488,7 +2722,7 @@
         }
 
         terminalClosing = false;
-        setTerminalConnection('loader-circle', t('terminal.connecting'), 'warning', true);
+        setTerminalConnection('loader-circle', 'terminal.connecting', 'warning', true);
         const socket = new WebSocket(terminalWebSocketUrl());
         terminalSocket = socket;
         socket.binaryType = 'arraybuffer';
@@ -2533,7 +2767,7 @@
             terminalSocket = null;
             try { socket.close(); } catch { /* no-op */ }
         }
-        setTerminalConnection('loader-circle', t('terminal.disconnected'), 'warning', false);
+        setTerminalConnection('loader-circle', 'terminal.disconnected', 'warning', false);
         updateTerminalWriteAccess();
         terminalClosing = false;
     }
@@ -2544,8 +2778,8 @@
         $('chooseNetwork').addEventListener('click', openNetworkChooser);
         // From the summary, manual entry corrects the network the device has;
         // from the chooser it names one the list cannot show.
-        $('enterNetwork').addEventListener('click', () => showManualNetwork(true));
-        $('otherNetwork').addEventListener('click', () => showManualNetwork(false));
+        $('enterNetwork').addEventListener('click', showManualNetwork);
+        $('otherNetwork').addEventListener('click', showManualNetwork);
         $('cancelNetworkChange').addEventListener('click', cancelNetworkEdit);
         $('backToNetworks').addEventListener('click', () => {
             if (backFromEditor()) backToNetworkList();
@@ -2566,9 +2800,8 @@
             $(id).addEventListener('input', () => {
                 setFieldError(id);
                 if (id !== 'wifiPassword') {
-                    $('wifiCredentialsName').textContent = $('ssid').value || t('wifi.editor.networkHeading');
+                    renderWifiCredentialsName();
                     renderPasswordEditor();
-                    renderLanTrialNotice();
                 }
                 renderWifiActions();
             });
@@ -2661,6 +2894,8 @@
         $('terminalClear').addEventListener('click', clearTerminal);
         $('terminalMode').addEventListener('change', renderTerminal);
         $('terminalShowSent').addEventListener('change', renderTerminal);
+        renderTerminalPause();
+        renderTerminalPlaceholder();
         updateTerminalCounters();
         updateTerminalWriteAccess();
     }
@@ -2683,8 +2918,19 @@
         }
     }
 
+    // The boot view keeps its own elements, so its message answers a change
+    // of language like every other message on the page.
+    function showBootFailure(key = 'boot.unreachable') {
+        setIcon($('bootIcon'), 'triangle-alert');
+        $('bootIcon').closest('svg').classList.remove('spin');
+        // The authored default hands the element over rather than competing
+        // with the message that replaces it.
+        delete $('bootText').dataset.i18n;
+        setMessage($('bootText'), key);
+    }
+
     async function initialize() {
-        applyStrings();
+        initializeLanguage();
         initializeTheme();
         initializeTabs();
         initializeConfiguration();
@@ -2693,10 +2939,8 @@
 
         try {
             await fetchStatus();
-        } catch {
-            $('bootView').innerHTML = '';
-            $('bootView').append(
-                createIcon('triangle-alert'), document.createTextNode(t('boot.unreachable')));
+        } catch (error) {
+            showBootFailure(error?.messageKey);
             window.setTimeout(initializeConnection, 1500);
             return;
         }

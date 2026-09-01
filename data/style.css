@@ -26,6 +26,7 @@
     --terminal-sent: #0f6cbd;
     --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23616161' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
     --control-height: 36px;
+    --card-gap: 16px;
     font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
@@ -70,11 +71,14 @@ button, .network-row, .tab { white-space: nowrap; }
 .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 38px; margin-bottom: 6px; }
 .device-brand, .brand-actions { display: flex; align-items: center; min-width: 0; }
 .device-brand { align-items: baseline; gap: 10px; }
-.brand-lockup { display: grid; gap: 3px; min-width: 0; }
+/* When the header runs out of room the commands and the product name hold
+   their size, and the device name gives way through its ellipsis. */
+.brand-lockup { flex: 0 0 auto; display: grid; gap: 3px; min-width: 0; }
 .brand-name { color: var(--muted); font-size: .72rem; font-weight: 600; letter-spacing: .01em; }
-.brand-actions { gap: 12px; }
+/* The commands are never squeezed; a longer language takes room from the
+   device name beside them, not from the buttons themselves. */
+.brand-actions { flex: 0 0 auto; gap: 12px; }
 .product-name { margin: 0; font-size: 1.35rem; font-weight: 600; letter-spacing: -.015em; line-height: 1.15; }
-.device-name { min-width: 0; overflow: hidden; color: var(--muted); font-size: .8rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .brand-action { flex: 0 0 auto; }
 
 .navigation { position: sticky; top: 0; z-index: 2; margin-top: 4px; padding-top: 6px; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(8px); }
@@ -93,8 +97,12 @@ h2, h3, p { margin-top: 0; }
 .section-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 1rem; font-weight: 600; }
 .section-icon { width: 32px; height: 32px; color: var(--muted); }
 .section-heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-.settings-section { margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
-.settings-section:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+/* One card, wherever a section sits on a page: Setup stacks them, Status lays
+   them out in a grid, and both draw the same surface from here. The ground
+   between cards is what separates them, so no card carries a rule of its own. */
+.settings-section, .status-group { padding: 14px 16px; background: var(--surface); border-radius: 10px; }
+.settings-section { margin-bottom: var(--card-gap); }
+.settings-section:last-child { margin-bottom: 0; }
 .settings-section > .section-title, .settings-section > .section-heading-row { margin-bottom: 16px; }
 .notice { display: flex; gap: 12px; margin-top: 20px; padding: 14px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 8px; }
 .notice-icon { margin-top: 1px; color: var(--accent); }
@@ -219,8 +227,7 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .save-state[data-state="danger"] { color: var(--danger); }
 .wifi-state { margin-top: 12px; }
 
-.bridge-summary { margin-bottom: 24px; padding: 8px 0 22px; border-bottom: 1px solid var(--line); text-align: center; }
-.bridge-summary .section-title { justify-content: center; }
+.bridge-summary { margin-bottom: var(--card-gap); padding: 4px 16px 14px; }
 /* Heading left, state right, matching the label/value rows in the status
    lists below. The summary is the only block on this view that is not a list,
    so it borrows their alignment instead of introducing a second idiom. */
@@ -230,12 +237,81 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .bridge-state[data-state="warning"] { color: var(--warning); }
 .bridge-state[data-state="danger"] { color: var(--danger); }
 .bridge-detail { color: var(--muted); }
-.status-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 48px; }
+/* A sentence that tells the reader to go and set something up has to be
+   the control that takes them there. */
+.bridge-action { min-width: 0; min-height: 0; padding: 0; color: var(--accent); font-weight: inherit; text-decoration: underline; }
+.bridge-action:hover { color: var(--accent-hover); }
+/* The device and the three links it can hold at once. An icon is a participant,
+   a card is a connection, and a connector is the line between them. All three
+   connection cards are one component at one size, and each says inside
+   itself what it is: only the setup branch differs, by its quieter edge. */
+.bridge-path { --bridge-node: 136px; --bridge-card: 196px; --bridge-link: 12px; display: grid; grid-template-columns: var(--bridge-node) var(--bridge-link) var(--bridge-card) var(--bridge-link) var(--bridge-node) var(--bridge-link) var(--bridge-card) var(--bridge-link) var(--bridge-node); grid-template-areas: "equipment cEquipment serial cSerial hub cTcp tcp cPeer peer" "fork fork fork fork fork fork fork fork fork" "cSetup cSetup cSetup cSetup cSetup cSetup cSetup cSetup cSetup" "setup setup setup setup setup setup setup setup setup" "cClients cClients cClients cClients cClients cClients cClients cClients cClients" "clients clients clients clients clients clients clients clients clients"; align-items: center; justify-content: center; justify-items: center; margin: 0 auto; }
+.bridge-path[data-stale="true"] { opacity: .65; }
+/* Nobody there is not a fault, and an AP that has shut itself down is normal.
+   Both read as less to look at, never as something switched off or broken. */
+.bridge-clients[data-clients="none"] { color: var(--muted); }
+.bridge-path[data-branch="off"] .bridge-c-setup, .bridge-path[data-branch="off"] .bridge-setup-wire, .bridge-path[data-branch="off"] .bridge-c-clients, .bridge-path[data-branch="off"] .bridge-clients { opacity: .5; }
+.bridge-equipment { grid-area: equipment; }
+.bridge-c-equipment { grid-area: cEquipment; }
+.bridge-serial-wire { grid-area: serial; }
+.bridge-c-serial { grid-area: cSerial; }
+.bridge-hub { grid-area: hub; }
+.bridge-c-tcp { grid-area: cTcp; }
+.bridge-tcp-wire { grid-area: tcp; }
+.bridge-c-peer { grid-area: cPeer; }
+.bridge-peer { grid-area: peer; }
+.bridge-fork { grid-area: fork; display: none; }
+.bridge-c-setup { grid-area: cSetup; }
+.bridge-setup-wire { grid-area: setup; }
+.bridge-c-clients { grid-area: cClients; }
+/* The count reads as a sentence, so it is not held to a participant column
+   the way the three named ends are. */
+.bridge-clients { grid-area: clients; width: auto; }
+/* Nothing in the drawing wraps. A label that folds onto a second line moves
+   every box beside it, and a broken address is worse than a narrower page. */
+.bridge-path, .bridge-path * { white-space: nowrap; }
+.bridge-node { display: flex; flex-direction: column; align-items: center; gap: 3px; width: var(--bridge-node); }
+.bridge-node-icon { width: 26px; height: 26px; color: var(--muted); }
+.bridge-node-label { font-size: 12px; font-weight: 600; }
+.bridge-node-address { color: var(--muted); font-size: 11px; }
+.bridge-count-short { display: none; }
+.bridge-wire { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: var(--bridge-card); height: 72px; padding: 6px 10px; color: var(--muted); font-size: 11px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+/* Both lines pair a fixed word with a value: the word stays whole and the
+   value is the one allowed to run out of room. */
+.bridge-wire-name, .bridge-wire-values { display: flex; align-items: center; justify-content: center; gap: 5px; max-width: 100%; }
+.bridge-wire-name { color: var(--text); font-weight: 600; }
+.bridge-wire-icon { width: 14px; height: 14px; color: var(--muted); }
+/* A network someone else named can be any length, so it is the one thing here
+   allowed to end in an ellipsis, with the whole of it on hover. */
+.bridge-wire-value { overflow: hidden; text-overflow: ellipsis; }
+/* An endpoint is a host and a port. The port is the half that names the socket,
+   so it holds its width and the host beside it is the one that runs out. */
+.bridge-wire-endpoint { display: flex; min-width: 0; }
+.bridge-wire-port { flex: 0 0 auto; }
+.bridge-wire-state { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.bridge-dot { width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
+.bridge-wire-state[data-state="success"] { color: var(--success); }
+.bridge-wire-state[data-state="warning"] { color: var(--warning); }
+.bridge-wire-state[data-state="danger"] { color: var(--danger); }
+/* Connectors are elements, not decoration hung off the boxes: they have to meet
+   both sides, and a box grown to close a gap is a box that lies about its size. */
+.bridge-connector { width: var(--bridge-link); height: 2px; background: var(--line); }
+.bridge-c-setup, .bridge-c-clients { width: 2px; height: 18px; }
+/* Management, not traffic: same box, quieter edge. */
+.bridge-setup-wire { background: transparent; border-style: dashed; }
+/* The grid takes as many columns as it has cards. A fixed pair left the one
+   card a signed-out reader can see sitting in half a row. */
+.status-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--card-gap); }
 .status-layout[data-stale="true"] { opacity: .65; }
+/* The rules inside a card separate one reading from the next, so they stop at
+   the last one: a trailing rule reads as the end of the group, and the card
+   edge is already that. */
 .status-group { min-width: 0; }
+.status-group > .section-title { margin-bottom: 4px; }
 
 .status-list { margin: 0; }
-.status-list > div { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(0, 1.2fr); gap: 16px; align-items: baseline; min-height: 36px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.status-list > div { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(0, 1.2fr); gap: 16px; align-items: baseline; min-height: 36px; padding: 7px 0; }
+.status-list > div + div { border-top: 1px solid var(--line); }
 .status-list dt { color: var(--muted); font-size: .8rem; }
 .status-list dd { margin: 0; overflow-wrap: anywhere; text-align: right; font-weight: 600; }
 
@@ -249,7 +325,9 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .terminal-frame { overflow: hidden; border-radius: 9px; }
 .terminal-toolbar { display: grid; gap: 6px; padding: 7px 10px; background: var(--surface-subtle); }
 .terminal-options-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.terminal-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* Wraps only when the labels no longer fit, so a longer language costs a
+   line of height instead of the end of the row. */
+.terminal-actions-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .terminal-control { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; margin: 0; color: var(--muted); font-size: .78rem; font-weight: 400; white-space: nowrap; }
 .terminal-control select { width: 100%; min-width: 0; min-height: var(--control-height); padding: 5px 30px 5px 9px; background-position: right 9px center; }
 .terminal-check { display: inline-flex; align-items: center; gap: 7px; min-height: var(--control-height); margin: 0; color: var(--muted); font-size: .78rem; font-weight: 400; white-space: nowrap; }
@@ -262,7 +340,7 @@ button:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .terminal-output { width: 100%; height: clamp(300px, 54vw, 500px); margin: 0; overflow: auto; padding: 14px; color: var(--terminal-text); background: var(--terminal-bg); border: 0; border-radius: 0; font-family: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; tab-size: 4; white-space: pre-wrap; cursor: text; }
 .terminal-sent { color: var(--terminal-sent); }
 .terminal-output.terminal-hex { overflow-wrap: normal; white-space: pre; }
-.terminal-output:empty::before { color: var(--terminal-muted); content: "Waiting for serial data..."; }
+.terminal-output:empty::before { color: var(--terminal-muted); content: attr(data-empty); }
 .terminal-output:focus-visible { outline-color: var(--accent); outline-offset: -3px; }
 .terminal[data-paused="true"] .terminal-output { opacity: .78; }
 .terminal-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 10px; color: var(--terminal-muted); background: var(--terminal-bg); border-top: 1px solid var(--terminal-line); font-size: .73rem; }
@@ -308,28 +386,69 @@ body.terminal-active .terminal-output { flex: 1 1 auto; min-height: 0; height: a
     .tabs { justify-content: space-between; gap: 0; }
     .tab { flex: 1; justify-content: center; }
     .view-content { padding-top: 18px; }
-    .status-layout { grid-template-columns: 1fr; gap: 24px; }
+    .status-layout { grid-template-columns: 1fr; }
     .device-groups { grid-template-columns: 1fr; }
     .device-group + .device-group { margin: 18px 0 0; padding: 18px 0 0; border-top: 1px solid var(--line); border-left: 0; }
     .terminal-view-content { padding-top: 12px; }
 }
 
+/* Measured: the wide row needs 808px of columns, and the page and card around
+   it take 152 more. Below that the branch forks rather than wrap a label,
+   which is the one thing the drawing must never do. */
+@media (max-width: 960px) {
+    .bridge-path { --bridge-card: 100%; --bridge-node: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "equipment equipment" "cEquipment cEquipment" "serial serial" "cSerial cSerial" "hub hub" "fork fork" "tcp setup" "cPeer cClients" "peer clients"; column-gap: 8px; }
+    /* A card fills its branch column. Serial has no branch, so it takes the
+       width of one and stands in the middle of both. */
+    .bridge-serial-wire { width: calc(50% - 4px); }
+    /* An icon on its own line costs more height here than the glyph is
+       worth. Each participant becomes one row instead: icon, name, and
+       the value belonging to it, read as a single line. */
+    .bridge-node { flex-direction: row; justify-content: center; gap: 6px; }
+    .bridge-node-icon { width: 20px; height: 20px; }
+    /* Half the width, so the count says only what it has to. The full
+       sentence stays in the name the page is read aloud by. */
+    .bridge-count-full { display: none; }
+    .bridge-count-short { display: inline; }
+    .bridge-connector { width: 2px; height: 14px; }
+    .bridge-c-equipment, .bridge-c-serial { height: 16px; }
+    .bridge-c-tcp, .bridge-c-setup { display: none; }
+    .bridge-fork { display: flex; flex-direction: column; align-items: center; width: 100%; }
+    .bridge-fork-stem { width: 2px; height: 12px; background: var(--line); }
+    .bridge-fork-rail { width: calc(50% + 4px); height: 16px; border: 2px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; }
+}
+
+/* Measured: a role word, its separator and a name as short as the device's
+   own need 143px of card, and below this width the card no longer has it.
+   The name is what somebody types into a phone, so the word gives way. It
+   is hidden the way .sr-only hides, because the glyph and the peer label
+   carry the role for everyone except the reader who cannot see them. */
+@media (max-width: 400px) {
+    .bridge-wire-role { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .bridge-wire-separator { display: none; }
+}
+
 @media (max-width: 480px) {
+    :root { --card-gap: 12px; }
     .shell { width: min(calc(100% - 24px), 880px); }
     .brand-row { gap: 10px; }
     .product-name { font-size: 1.25rem; }
+    /* The account command drops to its icon so the brand, the device name
+       and all three controls still share one line. The label stays as the
+       accessible name. */
     .brand-action { min-width: 0; padding-inline: 9px; }
+    .brand-actions { gap: 8px; }
+    .brand-action.icon-text { width: 40px; padding-inline: 0; }
+    .brand-action.icon-text span { display: none; }
     .tab { min-width: 0; padding-inline: 4px; font-size: .88rem; }
     .view-content { padding-top: 18px; }
-    .settings-section { margin-bottom: 24px; padding-bottom: 24px; }
     .section-heading-row { gap: 10px; }
-    .runtime-state { max-width: 56%; white-space: normal; }
     .empty-setting { align-items: stretch; flex-direction: column; gap: 12px; }
     .field-grid, .network-grid, .tcp-connect-grid { grid-template-columns: 1fr; }
+    /* The command keeps its label like every other command here; the tighter
+       padding is what buys the room for it, and a long name gives way
+       through the ellipsis it already has. */
     .setting-row { grid-template-columns: 78px minmax(0, 1fr) auto; gap: 8px; }
     .setting-row .secondary-button { min-width: 0; padding-inline: 8px; }
-    .setting-row .secondary-button span { display: none; }
-    .switch-row { align-items: flex-start; }
     .security-row { align-items: flex-start; flex-direction: column; gap: 12px; }
     .security-row > div:first-child { width: 100%; justify-content: space-between; }
     .security-actions { width: 100%; }
@@ -339,8 +458,10 @@ body.terminal-active .terminal-output { flex: 1 1 auto; min-height: 0; height: a
     .save-row .primary { width: 100%; }
     .bridge-summary { padding-top: 6px; }
     .editor-heading { align-items: flex-start; }
-    .editor-actions { align-items: flex-end; flex-direction: column; gap: 0; }
-    .network-transaction-actions { justify-content: flex-start; }
+    /* Commands fill the row on a narrow screen, as they do everywhere else
+       here, and take the next line rather than shrink under their label. */
+    .network-transaction-actions { flex-wrap: wrap; }
+    .network-transaction-actions button, .editor-footer button { flex: 1 1 auto; }
     .terminal-meta { align-items: center; margin-bottom: 8px; }
     .terminal-toolbar { padding: 6px 8px; }
     .terminal-options-row { gap: 8px; }
@@ -355,8 +476,8 @@ body.terminal-active .terminal-output { flex: 1 1 auto; min-height: 0; height: a
 
 @media (max-width: 360px) {
     .device-brand { gap: 7px; }
-    .device-name { max-width: 80px; font-size: .78rem; }
-    .brand-name { display: none; }
+    /* Half a network name names nothing, so the device name leaves rather
+       than truncates. The brand keeps the row. */
     .tab { font-size: .82rem; }
     .serial-grid { grid-template-columns: 1fr; }
     .terminal-compose { grid-template-columns: 1fr; }

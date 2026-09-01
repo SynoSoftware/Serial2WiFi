@@ -1,5 +1,5 @@
 {
-    "_comment": "The single maintained source for every user-facing string in data/index.html and data/app.js. tools/build_strings.py flattens this into data/strings.js at build time; nothing reads this file at run time, and keys beginning with _ are not emitted. Placeholders are named, as in {network}. Keys are semantic and grouped by feature, never named after an element. Messages name Serial2WiFi where the reader could otherwise take 'the device' to mean the phone or computer they are reading on. In every rendered state one element owns each fact, status, instruction and action: a title names the state, supporting text adds a cause, consequence, useful detail or next step, and a button names the action. Do not shorten a message to the point where it needs the element above it to be understood.",
+    "_comment": "The single maintained source for every user-facing string in data/index.html and data/app.js. tools/build_strings.py flattens this into data/strings.js at build time; nothing reads this file at run time, and keys beginning with _ are not emitted. Placeholders are named, as in {network}. Keys are semantic and grouped by feature, never named after an element. This page is served by Serial2WiFi and is its interface, so no message names the product. It reports its own state and its own work in the first party, as in 'Connecting…', 'Can't connect' and 'Couldn't save the settings'. The name belongs to the brand lockup and the document title only. In every rendered state one element owns each fact, status, instruction and action: a title names the state, supporting text adds a cause, consequence, useful detail or next step, and a button names the action. Do not shorten a message to the point where it needs the element above it to be understood.",
 
     "common": {
         "save": "Save",
@@ -22,18 +22,22 @@
     },
 
     "app": {
-        "connectionLost": "Lost the connection to Serial2WiFi. Retrying…"
+        "connectionLost": "Connection lost. Retrying…"
     },
 
     "boot": {
-        "connecting": "Connecting to Serial2WiFi…",
-        "unreachable": "Can't reach Serial2WiFi. Retrying…"
+        "connecting": "Connecting…",
+        "unreachable": "Can't connect. Retrying…"
     },
 
     "theme": {
-        "toggle": "Switch theme",
         "switchToDark": "Switch to dark theme",
         "switchToLight": "Switch to light theme"
+    },
+
+    "_language": "Each catalog names the language it is not, so the control needs no branch to label itself.",
+    "language": {
+        "switch": "Switch to Dutch"
     },
 
     "nav": {
@@ -45,7 +49,7 @@
     "auth": {
         "signIn": {
             "command": "Sign in",
-            "title": "Sign in to Serial2WiFi",
+            "title": "Sign in",
             "closeLabel": "Close sign-in dialog",
             "passwordRequired": "Enter the administrator password.",
             "failed": "Sign-in failed.",
@@ -128,9 +132,7 @@
             "ssidRequired": "Enter the network name.",
             "securityLabel": "Security",
             "securitySecured": "Password protected",
-            "securityOpen": "Open",
-            "lanNoticeNamed": "Connecting moves Serial2WiFi to this network. This phone or computer may lose contact with it. If that happens, join {setup} and reopen this page for the result.",
-            "lanNoticeUnnamed": "Connecting moves Serial2WiFi to this network. This phone or computer may lose contact with it. If that happens, join the setup network shown on the display and reopen this page for the result."
+            "securityOpen": "Open"
         },
         "chooser": {
             "title": "Choose network",
@@ -154,31 +156,27 @@
             "foundMany": "{count} networks found."
         },
         "trial": {
-            "title": "Connecting",
             "connecting": "Connecting to {network}",
             "elapsed": "{seconds}s — this can take up to a minute.",
             "announced": "Connecting to {network}.",
             "connected": "Connected to {network}",
             "connectedAnnounced": "Connected to {network}.",
-            "saved": "Serial2WiFi saved this network.",
-            "startFailed": "Serial2WiFi couldn't start the attempt.",
-            "rejectedValue": "Serial2WiFi wouldn't accept this value.",
+                "startFailed": "Couldn't start the attempt.",
             "authFailed": "Couldn't authenticate with {network}. Check the password.",
             "authFailedWeakSignal": "Couldn't authenticate with {network}. Check the password. The signal here is also weak ({rssi} dBm), which can cause this.",
-            "securityMismatch": "{network} uses a security type Serial2WiFi can't join.",
+            "securityMismatch": "Can't join {network}. Its security type isn't supported.",
             "notFound": "{network} is out of range or not broadcasting.",
             "couldNotSave": "Joined {network}, but couldn't save it.",
             "couldNotConnect": "Couldn't connect to {network}. Check the router."
         },
         "handoff": {
-            "address": "Serial2WiFi is now at {address}.",
-            "nextNamed": "You are reading this over the setup network {setup}, which Serial2WiFi switches off about 10 minutes after it connects. Move this phone or computer to {network} to keep using that address.",
-            "nextUnnamed": "You are reading this over the setup network, which Serial2WiFi switches off about 10 minutes after it connects. Move this phone or computer to {network} to keep using that address."
+            "address": "Reachable at http://{address} from your network ({network}).",
+            "nextNamed": "You are reading this over the setup network ({setup}), which turns off about 10 minutes after connecting.",
+            "nextUnnamed": "You are reading this over the setup network, which turns off about 10 minutes after connecting."
         },
         "forget": {
             "title": "Forget this network?",
-            "detailSetupAp": "Serial2WiFi removes {network} and its password. It stays reachable on this setup network.",
-            "detailLan": "Serial2WiFi removes {network} and its password, then leaves this network, so this page loses its connection. To reach it again, join the setup network shown on the display.",
+            "detail": "Forgetting removes {network} and any password saved with it. This page stays reachable on the setup network.",
             "working": "Forgetting…",
             "failed": "Couldn't forget the network.",
             "done": "Network forgotten."
@@ -193,14 +191,12 @@
         "listenPortLabel": "Listening port",
         "serverLabel": "Server",
         "portLabel": "Port",
-        "modeListenLong": "Listen for client",
-        "modeConnectLong": "Connect to server",
         "_runtime": "The chip beside the TCP heading on Setup, above the fields being edited. 'Current' is what separates what is running from what is typed; the coloured dot only reinforces it.",
         "runtime": {
             "unavailable": "Current · TCP unavailable",
             "notConfigured": "Current · Not configured",
             "waitingForWifi": "Current · Waiting for Wi-Fi",
-            "listening": "Current · Listening on port {port}",
+            "listening": "Current · Waiting for client · port {port}",
             "connecting": "Current · Connecting to {endpoint}…",
             "retrying": "Current · {endpoint} unavailable · retrying",
             "clientConnected": "Current · TCP client connected",
@@ -210,12 +206,13 @@
         "state": {
             "disabled": "Disabled",
             "waitingForWifi": "Waiting for Wi-Fi",
-            "listening": "Listening",
+            "listening": "Waiting for client",
             "connecting": "Connecting",
             "retrying": "Retrying",
             "clientConnected": "Client connected",
             "connected": "Connected",
-            "failure": "Failure"
+            "failure": "Failure",
+            "unknown": "Unrecognised state"
         }
     },
 
@@ -232,8 +229,7 @@
         "repeatLabel": "Repeat while held",
         "screenSaverTitle": "Screen saver",
         "screenSaverLabel": "Turn display off after",
-        "screenSaverOff": "Off",
-        "screenSaverHelp": "Leave blank to keep the display on."
+        "screenSaverHelp": "Leave blank to keep the display always on."
     },
 
     "setup": {
@@ -243,7 +239,6 @@
 
     "_bridge": "One line: a state word and a detail. The detail carries the port, the endpoint, the cause or the action the state word does not, never a second wording of it.",
     "bridge": {
-        "title": "Bridge",
         "needsWifiAndTcp": "Set up Wi-Fi and TCP.",
         "needsWifi": "Set up Wi-Fi.",
         "needsListenPort": "Set a listening port.",
@@ -263,23 +258,27 @@
         "failureTitle": "TCP failure",
         "failureListen": "The listener couldn't start.",
         "failureConnect": "Couldn't connect to {endpoint}.",
+        "portLabel": "port {port}",
+        "portNotSet": "port not set",
+        "endpointNotSet": "endpoint not set",
+        "roleStation": "Station",
+        "roleAccessPoint": "Access point",
+        "serialEquipment": "Serial equipment",
+        "noStationAddress": "No Wi-Fi address",
+        "noDevicesConnected": "No devices connected",
+        "deviceConnected": "{count} device connected",
+        "devicesConnected": "{count} devices connected",
+        "noneConnected": "None connected",
+        "countConnected": "{count} connected",
+        "tcpClient": "TCP client",
+        "tcpServer": "TCP server",
         "unknownTitle": "Unknown",
         "stale": "The last reading may be out of date."
     },
 
     "status": {
-        "networkTitle": "Network",
-        "wifiLabel": "Wi-Fi",
-        "ipLabel": "IP",
-        "setupApLabel": "Setup network",
         "setupApOn": "On",
         "setupApOff": "Off",
-        "wifiConnected": "Connected",
-        "tcpModeLabel": "Mode",
-        "tcpStateLabel": "State",
-        "tcpEndpointLabel": "Endpoint",
-        "tcpListenPortLabel": "Listening port",
-        "tcpServerLabel": "Server",
         "trafficTitle": "Traffic",
         "serialToTcpLabel": "Serial → TCP",
         "tcpToSerialLabel": "TCP → serial",
@@ -293,11 +292,11 @@
             "authFailedNamed": "Join the setup network {setup} and connect again with the current password.",
             "authFailedUnnamed": "Join the setup network shown on the display and connect again with the current password.",
             "notFoundTitle": "Network not found",
-            "notFound": "The saved network is out of range or not broadcasting. Serial2WiFi keeps looking.",
+            "notFound": "The saved network is out of range or not broadcasting. Still looking.",
             "securityMismatchTitle": "Security not supported",
             "securityMismatch": "Choose a different network.",
             "notConnectedTitle": "Not connected",
-            "notConnected": "Serial2WiFi keeps trying.",
+            "notConnected": "Still trying.",
             "connectingTitle": "Connecting"
         }
     },
@@ -320,41 +319,38 @@
         "disconnected": "Disconnected",
         "retrying": "Retrying",
         "retryingIn": "Retrying in {seconds}s",
+        "waiting": "Waiting for serial data…",
         "readOnlyHint": "Read-only while TCP is connected.",
         "typingHint": "Type to send. Tab moves focus. Pause stops the display only.",
         "sendLimit": "You can send up to {bytes} bytes at a time."
     },
 
     "errors": {
-        "authStateUnavailable": "Serial2WiFi didn't confirm the sign-in.",
         "invalidPassword": "Incorrect administrator password.",
         "incorrectPassword": "The current password is incorrect.",
         "tooManyAttempts": "Too many attempts. Wait a moment.",
         "authenticationRequired": "Your session ended. Sign in again.",
         "passwordRequired": "Enter a password.",
         "passwordAlreadySet": "An administrator password already exists. Sign in instead.",
-        "passwordSaveFailed": "Serial2WiFi couldn't store the password.",
-        "notAllowedHere": "Serial2WiFi refused this connection. Open the page at the address shown on the display.",
-        "csrf": "The request was rejected. Reload the page and try again.",
-        "unreachable": "Can't reach Serial2WiFi.",
+        "passwordSaveFailed": "Couldn't save the password.",
+        "notAllowedHere": "This page was opened at the wrong address. Open it at the address shown on the display.",
         "portRange": "Enter a port from 0 to 65535.",
         "remotePortRequired": "Enter a port from 1 to 65535.",
         "serverRequired": "Enter the server name or address.",
         "correctListenSettings": "Select Listen to correct its saved port.",
         "correctConnectSettings": "Select Connect to correct its saved server and port.",
         "range": "Enter a number from {min} to {max}.",
-        "screenSaverRange": "Enter 5 seconds or more, or leave blank for Off.",
-        "credentialChangeNotAllowed": "This page is out of date. Reload it.",
+        "screenSaverRange": "Enter 5 seconds or more.",
+        "pageOutOfDate": "This page is out of date. Reload it.",
         "invalidTimeout": "Enter a value within the allowed range.",
-        "invalidValue": "Enter a valid value.",
-        "settingsInvalid": "One or more settings are invalid.",
-        "settingsNotStored": "Serial2WiFi couldn't store the settings.",
+        "valueRejected": "This value can't be used.",
+        "settingsInvalid": "These settings can't be used.",
         "saveFailed": "Couldn't save the settings."
     },
 
     "save": {
         "done": "Changes saved.",
-        "serialNotApplied": "Settings saved, but Serial2WiFi couldn't apply the serial settings.",
+        "serialNotApplied": "Settings saved. The serial settings couldn't be applied.",
         "unconfirmed": "Couldn't confirm whether the settings were saved. Your entries are still here."
     }
 }
